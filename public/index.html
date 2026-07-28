@@ -1,0 +1,120 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#FAFAFA">
+  <meta name="description" content="Find verified student homes and compatible roommates near Nigerian universities.">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <title>Offkay</title>
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"><i></i><i></i><i></i></div>
+
+  <section id="authScreen" class="auth-screen">
+    <div class="auth-brand">
+      <a class="brand" href="#"><span class="brand-mark">&#8962;</span><span>Offkay</span></a>
+      <div class="auth-story">
+        <span class="pill"><i class="live-dot"></i> Housing built around student life</span>
+        <h1>Your next campus home starts here.</h1>
+        <p>Verified accommodation, compatible roommates, protected payments, and direct landlord conversations.</p>
+        <div class="story-card glass">
+          <div class="story-house"><div></div></div>
+          <div><strong>One calm place for the whole journey.</strong><span>Search. Match. Chat. Book.</span></div>
+        </div>
+      </div>
+      <small>Built for students and property owners across Nigeria.</small>
+    </div>
+
+    <div class="auth-panel">
+      <div class="auth-box glass">
+        <div class="mobile-brand brand"><img class="brand-logo" src="/offkay-mark.png" alt=""><span>offkay</span></div>
+        <div class="auth-heading">
+          <span class="eyebrow" id="authEyebrow">Offkay</span>
+          <h2 id="authTitle">Sign in</h2>
+          <p id="authSubtitle">Access your housing, messages, and bookings.</p>
+        </div>
+
+        <form id="loginForm" class="form-stack">
+          <label>Email address<input name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label>
+          <label>Password<input name="password" type="password" autocomplete="current-password" placeholder="At least 8 characters" required></label>
+          <button class="button primary wide" type="submit">Sign in <span>&rarr;</span></button>
+          <button class="text-button" type="button" data-auth-mode="signup">New here? <b>Create an account</b></button>
+          <div class="demo-row">
+            <span>Try the prepared MVP:</span>
+            <button type="button" class="demo-login" data-demo="tenant">Tenant demo</button>
+            <button type="button" class="demo-login" data-demo="landlord">Landlord demo</button>
+          </div>
+        </form>
+
+        <form id="signupForm" class="form-stack hidden">
+          <div class="role-picker">
+            <button type="button" class="role-option active" data-role="tenant"><span>&#9817;</span><b>I need a home</b><small>Tenant or student</small></button>
+            <button type="button" class="role-option" data-role="landlord"><span>&#8962;</span><b>I have a property</b><small>Landlord or agent</small></button>
+          </div>
+          <div class="two-fields">
+            <label>Full name<input name="name" placeholder="Your full name" required></label>
+            <label>Phone number<input name="phone" type="tel" placeholder="0803 000 0000" required></label>
+          </div>
+          <label>Email address<input name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label>
+          <label>University<select name="university" id="signupUniversity" required></select></label>
+          <label>Password<input name="password" type="password" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" required></label>
+          <input type="hidden" name="role" value="tenant">
+          <button class="button primary wide" type="submit">Create my account <span>&rarr;</span></button>
+          <button class="text-button" type="button" data-auth-mode="login">Already have an account? <b>Sign in</b></button>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <div id="app" class="app hidden">
+    <header class="topbar glass">
+      <a class="brand" href="#" data-tab="home"><img class="brand-logo" src="/offkay-mark.png" alt=""><span>offkay</span></a>
+      <div class="top-search">
+        <span>&#8981;</span>
+        <input id="globalSearch" placeholder="Search homes, areas, universities...">
+        <kbd>Ctrl K</kbd>
+      </div>
+      <div class="top-actions">
+        <button class="icon-button" id="notificationButton" aria-label="Notifications">&#9826;<i></i></button>
+        <button class="user-chip" data-tab="profile"><span class="avatar" id="topAvatar">AO</span><span><b id="topName">Amara</b><small id="topRole">Tenant</small></span><em>v</em></button>
+      </div>
+    </header>
+
+    <aside class="sidebar glass">
+      <nav class="main-nav" aria-label="Primary">
+        <button class="nav-item active" data-tab="home"><svg><use href="/offkay-icons.svg#home"></use></svg><b>Home</b></button>
+        <button class="nav-item" data-tab="explore"><svg><use href="/offkay-icons.svg#pin"></use></svg><b>Explore</b></button>
+        <button class="nav-item" data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b><i id="messageBadge"></i></button>
+        <button class="nav-item" data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Profile</b></button>
+      </nav>
+      <div class="sidebar-card" id="sidebarCard">
+        <span>Roommate Match</span>
+        <strong>Living is easier with the right person.</strong>
+        <button class="button light small" data-action="open-matches">Find a match</button>
+      </div>
+      <button class="logout-link" id="logoutButton"><span>&rarr;</span> Sign out</button>
+    </aside>
+
+    <main class="content">
+      <section id="tab-home" class="tab active"></section>
+      <section id="tab-explore" class="tab"></section>
+      <section id="tab-messages" class="tab"></section>
+      <section id="tab-profile" class="tab"></section>
+    </main>
+
+    <nav class="bottom-nav glass" aria-label="Mobile navigation">
+      <button class="active" data-tab="home"><svg><use href="/offkay-icons.svg#home"></use></svg><b>Home</b></button>
+      <button data-tab="explore"><svg><use href="/offkay-icons.svg#pin"></use></svg><b>Explore</b></button>
+      <button data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b></button>
+      <button data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Profile</b></button>
+    </nav>
+  </div>
+
+  <div id="modalRoot" class="modal-root" aria-live="polite"></div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

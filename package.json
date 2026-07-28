@@ -1,0 +1,13 @@
+﻿{
+  "name": "offkay-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offkay student housing and roommate matching MVP",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/app.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

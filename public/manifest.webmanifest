@@ -1,0 +1,12 @@
+﻿{
+  "name": "Offkay",
+  "short_name": "Offkay",
+  "description": "Verified student housing and roommate matching in Nigeria.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FAFAFA",
+  "theme_color": "#344E67",
+  "icons": [
+    {"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}
