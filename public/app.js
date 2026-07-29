@@ -10,8 +10,12 @@
   activeTab: "home",
   activeConversation: null,
   messages: [],
-  filters: { query: "", university: "", type: "All", maxPrice: "" },
+  filters: {
+    homes: { query: "", university: "", type: "All", maxPrice: "", bedrooms: "", verified: false },
+    roommates: { query: "", university: "", maxBudget: "", habit: "", verified: false }
+  },
   exploreMode: "homes",
+  hostView: localStorage.getItem("offkay-host-view") === "true",
   theme: localStorage.getItem("offkay-theme") || "offkay"
 };
 
@@ -24,6 +28,8 @@ const time = iso => new Intl.DateTimeFormat("en-NG",{hour:"numeric",minute:"2-di
 const firstName = name => String(name || "").split(" ")[0];
 const mapUrl = listing => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${listing.area}, ${listing.university}, Nigeria`)}`;
 const icon = name => `<svg class="off-icon" aria-hidden="true"><use href="/offkay-icons.svg#${name}"></use></svg>`;
+const canHost = () => state.user?.role === "landlord" || state.user?.hosting === true;
+const inHostView = () => canHost() && state.hostView;
 
 function applyTheme(theme) {
   state.theme = theme;
@@ -112,9 +118,9 @@ function enterApp() {
   $("#app").classList.remove("hidden");
   $("#topAvatar").textContent = initials(state.user.name);
   $("#topName").textContent = firstName(state.user.name);
-  $("#topRole").textContent = state.user.role === "landlord" ? "Landlord" : "Tenant";
+  $("#topRole").textContent = inHostView() ? "Host" : "Guest";
   $("#messageBadge").style.display = state.conversations.length ? "block" : "none";
-  $("#sidebarCard").innerHTML = state.user.role === "landlord"
+  $("#sidebarCard").innerHTML = inHostView()
     ? `<span>Grow your portfolio</span><strong>Publish a verified property in minutes.</strong><button class="button light small" data-action="new-listing">Add property</button>`
     : `<span>Roommate Match</span><strong>Living is easier with the right person.</strong><button class="button light small" data-action="open-matches">Find a match</button>`;
   renderAll();
@@ -216,7 +222,7 @@ function landlordHome() {
 }
 
 function renderHome() {
-  $("#tab-home").innerHTML = state.user.role === "landlord" ? landlordHome() : tenantHome();
+  $("#tab-home").innerHTML = inHostView() ? landlordHome() : tenantHome();
 }
 
 function propertyTable(items) {
@@ -233,31 +239,70 @@ function propertyTable(items) {
 }
 
 function filteredListings() {
-  const query = state.filters.query.toLowerCase();
+  const filters = state.filters.homes;
+  const query = filters.query.toLowerCase();
   return state.listings.filter(item => {
     const text = `${item.title} ${item.area} ${item.university}`.toLowerCase();
     return (!query || text.includes(query))
-      && (!state.filters.university || item.university === state.filters.university)
-      && (state.filters.type === "All" || item.type === state.filters.type)
-      && (!state.filters.maxPrice || item.price <= Number(state.filters.maxPrice));
+      && (!filters.university || item.university === filters.university)
+      && (filters.type === "All" || item.type === filters.type)
+      && (!filters.maxPrice || item.price <= Number(filters.maxPrice))
+      && (!filters.bedrooms || item.bedrooms >= Number(filters.bedrooms))
+      && (!filters.verified || item.verified);
+  });
+}
+
+function filteredRoommates() {
+  const filters = state.filters.roommates;
+  const query = filters.query.toLowerCase();
+  return state.roommateCandidates.filter(person => {
+    const text = `${person.name} ${person.university} ${person.bio || ""} ${(person.habits || []).join(" ")}`.toLowerCase();
+    return (!query || text.includes(query))
+      && (!filters.university || person.university === filters.university)
+      && (!filters.maxBudget || Number(person.budget || 0) <= Number(filters.maxBudget))
+      && (!filters.habit || (person.habits || []).includes(filters.habit))
+      && (!filters.verified || person.verified);
   });
 }
 
 function renderExplore() {
   const items = filteredListings();
-  const tenant = state.user.role === "tenant";
+  const roommates = filteredRoommates();
+  const hosting = inHostView();
+  const browsingRoommates = state.exploreMode === "roommates";
+  const homeFilters = state.filters.homes;
+  const roommateFilters = state.filters.roommates;
+  const habitOptions = ["Very tidy","Night owl","Early bird","Quiet home","Social","Non-smoker","Cooks often","Pet friendly"];
   $("#tab-explore").innerHTML = `
-    <div class="page-head"><div><span class="eyebrow">${tenant?"Student housing":"Your housing portfolio"}</span><h1>${tenant?"Find a place that works.":"Your houses, at a glance."}</h1><p>${tenant?"Search homes, roommates, inspections, and split rent from one quiet place.":"Publish a house, manage inspections, and answer students."}</p></div><div class="page-actions">${tenant?`<button class="button subtle" data-action="open-inspections">${icon("calendar")} Inspections</button>`:`<button class="button subtle" data-action="open-inspections">${icon("calendar")} Inspections</button><button class="button primary" data-action="new-listing">${icon("plus")} Add a house</button>`}</div></div>
-    <div class="liquid-segment" aria-label="Explore view"><button class="${state.exploreMode==="homes"?"active":""}" data-action="explore-mode" data-mode="homes">Homes</button><button class="${state.exploreMode==="map"?"active":""}" data-action="explore-mode" data-mode="map">Map</button>${tenant?`<button class="${state.exploreMode==="roommates"?"active":""}" data-action="explore-mode" data-mode="roommates">Roommates</button>`:""}</div>
-    <div class="filter-bar glass">
-      <label class="filter-field"><span>&#8981;</span><input id="listingSearch" value="${esc(state.filters.query)}" placeholder="Area or property name"></label>
-      <label class="filter-field"><span>&#8982;</span><select id="universityFilter"><option value="">All universities</option>${state.universities.map(name=>`<option ${state.filters.university===name?"selected":""}>${esc(name)}</option>`).join("")}</select></label>
-      <label class="filter-field"><span>&#8358;</span><select id="priceFilter"><option value="">Any budget</option><option value="300000" ${state.filters.maxPrice==="300000"?"selected":""}>Under &#8358;300k</option><option value="500000" ${state.filters.maxPrice==="500000"?"selected":""}>Under &#8358;500k</option><option value="750000" ${state.filters.maxPrice==="750000"?"selected":""}>Under &#8358;750k</option></select></label>
-      <button class="button primary" id="clearFilters">Reset</button>
-    </div>
-    <div class="filter-chips">${["All","Studio","Shared","En-suite"].map(type=>`<button class="chip ${state.filters.type===type?"active":""}" data-action="filter-type" data-type="${type}">${type}</button>`).join("")}</div>
-    <div class="section-head"><div><h2>${state.exploreMode==="roommates" ? `${state.roommateCandidates.length} compatible roommates` : `${items.length} ${items.length===1?"home":"homes"} available`}</h2><p>${state.exploreMode==="roommates" ? "Filtered by university, budget, and lifestyle compatibility." : "Every published property is reviewed by Offkay."}</p></div></div>
-    ${state.exploreMode==="roommates" ? `<div class="roommate-grid">${state.roommateCandidates.map(roommateCard).join("") || emptyState("No roommate matches yet","Update your budget and habits in Settings.")}</div>` : state.exploreMode==="map" ? mapCanvas(items) : `<div class="listing-grid">${items.map(item=>listingCard(item)).join("") || emptyState("Nothing matches those filters","Try widening your budget or selecting another university.")}</div>`}`;
+    <div class="page-head"><div><span class="eyebrow">${hosting?"Host tools":"Explore Offkay"}</span><h1>${hosting?"Manage your places.":"Find a home, then find your people."}</h1><p>${hosting?"Review your properties and incoming inspection requests.":"Search verified homes and compatible roommates with filters made for each."}</p></div><div class="page-actions"><button class="button subtle" data-action="open-inspections">${icon("calendar")} Inspections</button>${hosting?`<button class="button primary" data-action="new-listing">${icon("plus")} Add a house</button>`:""}</div></div>
+    ${hosting ? "" : `<div class="liquid-segment" aria-label="Explore view"><button class="${state.exploreMode==="homes"?"active":""}" data-action="explore-mode" data-mode="homes">Homes</button><button class="${state.exploreMode==="map"?"active":""}" data-action="explore-mode" data-mode="map">Map</button><button class="${browsingRoommates?"active":""}" data-action="explore-mode" data-mode="roommates">Roommates</button></div>`}
+    ${hosting ? `<div class="section-head"><div><h2>Your properties</h2><p>Published places and verification status.</p></div></div>${propertyTable(state.listings.filter(item=>item.ownerId===state.user.id))}` : browsingRoommates ? `
+      <div class="filter-panel glass">
+        <div class="filter-panel-head"><div><b>Find a roommate</b><small>Match by campus, budget, lifestyle, and verification.</small></div><button class="link-button" data-action="reset-roommate-filters">Clear</button></div>
+        <div class="filter-bar roommate-filter-bar">
+          <label class="filter-field"><span>&#8981;</span><input data-filter="roommate-query" value="${esc(roommateFilters.query)}" placeholder="Name or keyword"></label>
+          <label class="filter-field"><span>&#8982;</span><select data-filter="roommate-university"><option value="">All universities</option>${state.universities.map(name=>`<option value="${esc(name)}" ${roommateFilters.university===name?"selected":""}>${esc(name)}</option>`).join("")}</select></label>
+          <label class="filter-field"><span>&#8358;</span><select data-filter="roommate-budget"><option value="">Any budget</option><option value="300000" ${roommateFilters.maxBudget==="300000"?"selected":""}>Up to &#8358;300k</option><option value="500000" ${roommateFilters.maxBudget==="500000"?"selected":""}>Up to &#8358;500k</option><option value="750000" ${roommateFilters.maxBudget==="750000"?"selected":""}>Up to &#8358;750k</option></select></label>
+          <label class="filter-field"><span>&#9673;</span><select data-filter="roommate-habit"><option value="">Any lifestyle</option>${habitOptions.map(habit=>`<option value="${esc(habit)}" ${roommateFilters.habit===habit?"selected":""}>${esc(habit)}</option>`).join("")}</select></label>
+          <label class="check-filter"><input type="checkbox" data-filter="roommate-verified" ${roommateFilters.verified?"checked":""}><span>Verified only</span></label>
+        </div>
+      </div>
+      <div class="section-head"><div><h2>${roommates.length} compatible ${roommates.length===1?"roommate":"roommates"}</h2><p>Profiles are shown only after a match is calculated. Open one to see the full profile or start a chat.</p></div></div>
+      <div class="roommate-grid">${roommates.map(roommateCard).join("") || emptyState("No roommates match yet","Try widening a filter or update your own profile in Settings.")}</div>` : `
+      <div class="filter-panel glass">
+        <div class="filter-panel-head"><div><b>Search homes</b><small>Only reviewed places show a verified badge.</small></div><button class="link-button" data-action="reset-home-filters">Clear</button></div>
+        <div class="filter-bar home-filter-bar">
+          <label class="filter-field"><span>&#8981;</span><input data-filter="home-query" value="${esc(homeFilters.query)}" placeholder="Area, university, or house name"></label>
+          <label class="filter-field"><span>&#8982;</span><select data-filter="home-university"><option value="">All universities</option>${state.universities.map(name=>`<option value="${esc(name)}" ${homeFilters.university===name?"selected":""}>${esc(name)}</option>`).join("")}</select></label>
+          <label class="filter-field"><span>&#8358;</span><select data-filter="home-price"><option value="">Any budget</option><option value="300000" ${homeFilters.maxPrice==="300000"?"selected":""}>Under &#8358;300k</option><option value="500000" ${homeFilters.maxPrice==="500000"?"selected":""}>Under &#8358;500k</option><option value="750000" ${homeFilters.maxPrice==="750000"?"selected":""}>Under &#8358;750k</option></select></label>
+          <label class="filter-field"><span>&#8962;</span><select data-filter="home-bedrooms"><option value="">Any size</option><option value="1" ${homeFilters.bedrooms==="1"?"selected":""}>1+ bedroom</option><option value="2" ${homeFilters.bedrooms==="2"?"selected":""}>2+ bedrooms</option><option value="3" ${homeFilters.bedrooms==="3"?"selected":""}>3+ bedrooms</option></select></label>
+          <label class="check-filter"><input type="checkbox" data-filter="home-verified" ${homeFilters.verified?"checked":""}><span>Verified only</span></label>
+        </div>
+        <div class="filter-chips">${["All","Studio","Shared","En-suite","Self-contained","Apartment"].map(type=>`<button class="chip ${homeFilters.type===type?"active":""}" data-action="filter-type" data-type="${type}">${type}</button>`).join("")}</div>
+      </div>
+      <div class="section-head"><div><h2>${items.length} ${items.length===1?"home":"homes"} available</h2><p>View the details, request an inspection, or save a home for later.</p></div></div>
+      ${state.exploreMode==="map" ? mapCanvas(items) : `<div class="listing-grid">${items.map(item=>listingCard(item)).join("") || emptyState("Nothing matches those filters","Try clearing a filter or selecting another university.")}</div>`}`}
+  `;
 }
 
 function mapCanvas(items) {
@@ -334,7 +379,7 @@ function renderProfile() {
   const paid = state.bookings.filter(item=>item.status==="paid").length;
   const habits = ["Very tidy","Night owl","Early bird","Quiet home","Social","Non-smoker","Cooks often","Pet friendly"];
   $("#tab-profile").innerHTML = `
-    <div class="page-head"><div><span class="eyebrow">Your account</span><h1>Profile & preferences</h1><p>Keep your details current so Offkay can work better for you.</p></div><div class="page-actions"><button class="button subtle" data-action="open-settings">${icon("settings")} Appearance</button></div></div>
+    <div class="page-head"><div><span class="eyebrow">Account settings</span><h1>Profile, trust & preferences</h1><p>Manage your profile, verification, guest preferences, and hosting from one place.</p></div><div class="page-actions"><button class="button subtle" data-action="open-settings">${icon("settings")} More settings</button></div></div>
     <div class="profile-grid">
       <aside class="profile-card glass">
         <span class="avatar large">${initials(state.user.name)}</span>
@@ -344,9 +389,13 @@ function renderProfile() {
           <div class="profile-stat"><b>${tenant?state.listings.filter(item=>item.saved).length:mine}</b><span>${tenant?"SAVED HOMES":"PROPERTIES"}</span></div>
           <div class="profile-stat"><b>${paid}</b><span>CONFIRMED</span></div>
         </div>
+        <div class="account-actions">
+          <button class="settings-row" data-action="open-verification">${icon("verified")}<span><b>Verification</b><small>${esc(state.verification?.status || state.user.verificationStatus || (state.user.verified ? "verified" : "not submitted"))}</small></span><em>&rarr;</em></button>
+          <button class="settings-row" data-action="${canHost() ? "switch-view" : "activate-host"}">${icon("home")}<span><b>${canHost() ? (inHostView() ? "Switch to guest view" : "Switch to host view") : "Become a host"}</b><small>${canHost() ? "Your guest account and roommate tools stay available" : "List spaces without losing your guest account"}</small></span><em>&rarr;</em></button>
+        </div>
       </aside>
       <form class="profile-form glass form-stack" id="profileForm">
-        <h2>Personal details</h2><p>${tenant?"Your university and habits are used for roommate recommendations.":"These details appear on your verified property profile."}</p>
+        <h2>Profile details</h2><p>${tenant?"Your university, budget, and habits improve roommate recommendations.":"These details appear on your host profile."}</p>
         <div class="two-fields"><label>Full name<input name="name" value="${esc(state.user.name)}" required></label><label>Phone number<input name="phone" value="${esc(state.user.phone || "")}"></label></div>
         <label>University<select name="university">${state.universities.map(name=>`<option ${state.user.university===name?"selected":""}>${esc(name)}</option>`).join("")}</select></label>
         <label>About you<textarea name="bio" placeholder="${tenant?"Tell potential roommates a little about yourself":"Tell students about your experience and properties"}">${esc(state.user.bio || "")}</textarea></label>
@@ -385,7 +434,7 @@ function settingsSheet() {
     <div class="modal-head"><div><span class="eyebrow">Appearance</span><h2>Choose a palette</h2><p>Each palette preserves Offkay’s contrast, safety states, and housing-first hierarchy.</p></div><button class="close-button">&times;</button></div>
     <div class="settings-stack">
       <button class="settings-row" data-action="open-verification">${icon("verified")} <span><b>Manual verification</b><small>NIN, ID card, and student/host document</small></span><em>${esc(state.verification?.status || state.user.verificationStatus || "not submitted")}</em></button>
-      ${state.user.role === "tenant" ? `<button class="settings-row" data-action="activate-host">${icon("home")} <span><b>Become a host</b><small>Switch to host mode and publish verified houses</small></span><em>Airbnb-style</em></button>` : `<button class="settings-row" data-action="new-listing">${icon("plus")} <span><b>Add a house</b><small>Landlord-only listing creation</small></span><em>Host</em></button>`}
+      ${canHost() ? `<button class="settings-row" data-action="switch-view">${icon("home")} <span><b>${inHostView() ? "Switch to guest view" : "Switch to host view"}</b><small>Keep your bookings and roommate matching in the same account</small></span><em>${inHostView() ? "Host" : "Guest"}</em></button><button class="settings-row" data-action="new-listing">${icon("plus")} <span><b>Add a house</b><small>Every new property goes through verification</small></span><em>Host</em></button>` : `<button class="settings-row" data-action="activate-host">${icon("home")} <span><b>Become a host</b><small>List spaces while keeping your guest account and roommate profile</small></span><em>Start</em></button>`}
     </div>
     <div class="theme-grid">${themes.map(theme=>`<button class="theme-choice ${state.theme===theme.id?"active":""}" data-action="set-theme" data-theme="${theme.id}"><span class="theme-swatches">${theme.colors.map(color=>`<i style="background:${color}"></i>`).join("")}</span><b>${theme.name}</b><small>${theme.note}</small></button>`).join("")}</div>
     <div class="payment-note">Offkay is the default brand theme. Your preference is saved on this device.</div>`);
@@ -423,12 +472,12 @@ async function submitVerification(event) {
 }
 
 async function activateHost() {
-  modal(`<div class="modal-head"><div><span class="eyebrow">Become a host</span><h2>Start hosting on Offkay</h2><p>You’ll switch into host mode so you can publish houses, manage inspections, and receive verified student enquiries.</p></div><button class="close-button">&times;</button></div><button class="button primary wide" id="activateHostButton">${icon("home")} Continue as host</button>`);
+  modal(`<div class="modal-head"><div><span class="eyebrow">Become a host</span><h2>Start hosting on Offkay</h2><p>Hosting is added to your account. You keep your bookings, saved homes, roommate profile, and guest controls.</p></div><button class="close-button">&times;</button></div><button class="button primary wide" id="activateHostButton">${icon("home")} Enable hosting</button>`);
   $("#activateHostButton").onclick = async event => {
     setLoading(event.currentTarget,true,"Switching…");
     try {
       const data = await request("/api/host/activate",{method:"POST"});
-      state.user = data.user; await refreshData(false); closeModal(); enterApp(); switchTab("explore"); toast("Host mode activated");
+      state.user = data.user; state.hostView = true; localStorage.setItem("offkay-host-view","true"); await refreshData(false); closeModal(); enterApp(); switchTab("explore"); toast("Hosting activated. Your guest tools are still available in Settings.");
     } catch(error) { toast(error.message); }
   };
 }
@@ -723,10 +772,18 @@ function bindEvents() {
     if (action==="open-settings") settingsSheet();
     if (action==="open-verification") verificationSheet();
     if (action==="activate-host") activateHost();
+    if (action==="switch-view") {
+      state.hostView = !state.hostView;
+      localStorage.setItem("offkay-host-view", String(state.hostView));
+      closeModal(); enterApp(); switchTab("home");
+      toast(state.hostView ? "Host view enabled" : "Guest view enabled");
+    }
     if (action==="set-theme") {applyTheme(actionNode.dataset.theme);settingsSheet();}
     if (action==="explore-mode") {state.exploreMode=actionNode.dataset.mode;renderExplore();}
     if (action==="finish-payment") {closeModal();switchTab("home");renderHome();toast("Booking confirmed");}
-    if (action==="filter-type") {state.filters.type=actionNode.dataset.type;renderExplore();}
+    if (action==="filter-type") {state.filters.homes.type=actionNode.dataset.type;renderExplore();}
+    if (action==="reset-home-filters") {state.filters.homes={query:"",university:"",type:"All",maxPrice:"",bedrooms:"",verified:false};renderExplore();}
+    if (action==="reset-roommate-filters") {state.filters.roommates={query:"",university:"",maxBudget:"",habit:"",verified:false};renderExplore();}
     if (action==="open-conversation") {state.activeConversation=id;renderMessages();}
     if (action==="back-to-conversations") {state.activeConversation=null;renderMessages();}
     if (action==="toggle-habit") actionNode.classList.toggle("selected");
@@ -738,7 +795,7 @@ function bindEvents() {
   $("#logoutButton").addEventListener("click", logout);
   $("#globalSearch").addEventListener("keydown", event => {
     if (event.key === "Enter") {
-      state.filters.query=event.currentTarget.value;switchTab("explore");renderExplore();
+      state.filters.homes.query=event.currentTarget.value;state.exploreMode="homes";switchTab("explore");renderExplore();
     }
   });
   document.addEventListener("keydown",event=>{
@@ -746,16 +803,35 @@ function bindEvents() {
     if(event.key==="Escape")closeModal();
   });
   document.addEventListener("input",event=>{
-    if(event.target.id==="listingSearch"){state.filters.query=event.target.value;clearTimeout(renderExplore.timer);renderExplore.timer=setTimeout(renderExplore,180);}
-    if(event.target.id==="universityFilter"){state.filters.university=event.target.value;renderExplore();}
-    if(event.target.id==="priceFilter"){state.filters.maxPrice=event.target.value;renderExplore();}
+    const filter = event.target.dataset.filter;
+    if(filter==="home-query") state.filters.homes.query=event.target.value;
+    if(filter==="roommate-query") state.filters.roommates.query=event.target.value;
     if(event.target.id==="conversationSearch"){
       const query=event.target.value.toLowerCase();
       $("#conversationRows").innerHTML=state.conversations.filter(item=>item.other?.name.toLowerCase().includes(query)).map(conversationRow).join("");
     }
   });
-  document.addEventListener("click",event=>{
-    if(event.target.id==="clearFilters"){state.filters={query:"",university:"",type:"All",maxPrice:""};renderExplore();}
+  document.addEventListener("change",event=>{
+    const filter = event.target.dataset.filter;
+    if (!filter) return;
+    const value = event.target.type === "checkbox" ? event.target.checked : event.target.value;
+    const [group, key] = filter.split("-");
+    if (group === "home") {
+      const field = ({university:"university",price:"maxPrice",bedrooms:"bedrooms",verified:"verified"})[key];
+      if (field) state.filters.homes[field] = value;
+    }
+    if (group === "roommate") {
+      const field = ({university:"university",budget:"maxBudget",habit:"habit",verified:"verified"})[key];
+      if (field) state.filters.roommates[field] = value;
+    }
+    renderExplore();
+  });
+  document.addEventListener("keydown",event=>{
+    const filter = event.target.dataset?.filter;
+    if ((filter==="home-query" || filter==="roommate-query") && event.key==="Enter") {
+      event.preventDefault();
+      renderExplore();
+    }
   });
 }
 

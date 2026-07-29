@@ -160,6 +160,10 @@ function currentUser(req, db) {
   return session ? db.users.find(user => user.id === session.userId) : null;
 }
 
+function canHost(user) {
+  return user?.role === "landlord" || user?.hosting === true;
+}
+
 function json(res, status, payload, headers = {}) {
   res.writeHead(status, { "Content-Type":"application/json; charset=utf-8", "Cache-Control":"no-store", ...headers });
   res.end(JSON.stringify(payload));
@@ -283,7 +287,7 @@ async function api(req, res, url) {
 
   if (route === "/api/host/activate" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
-    account.role = "landlord";
+    account.hosting = true;
     account.hostActivatedAt = new Date().toISOString();
     await writeDb(db);
     return json(res, 200, {user:publicUser(account)});
@@ -308,7 +312,7 @@ async function api(req, res, url) {
 
   if (route === "/api/listings" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
-    if (account.role !== "landlord") return error(res, 403, "Only landlord accounts can publish properties");
+    if (!canHost(account)) return error(res, 403, "Activate hosting before publishing a property");
     const body = await parseBody(req);
     if (!body.title || !body.area || !body.price) return error(res,400,"Title, area, and annual rent are required");
     const listing = {
@@ -320,7 +324,7 @@ async function api(req, res, url) {
       amenities:Array.isArray(body.amenities) ? body.amenities.map(String).slice(0,10) : [],
       photos:Array.isArray(body.photos) ? body.photos.filter(photo => typeof photo === "string" && photo.startsWith("data:image/")).slice(0,4) : [],
       latitude:Number(body.latitude || 0),longitude:Number(body.longitude || 0),
-      source:account.role === "landlord" ? "landlord" : "tenant-share",
+      source:canHost(account) ? "host" : "tenant-share",
       verified:false,status:"active",accent:["emerald","amber","blue","rose"][db.listings.length%4],
       createdAt:new Date().toISOString()
     };
