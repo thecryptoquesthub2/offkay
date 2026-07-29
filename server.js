@@ -2,12 +2,14 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const os = require("node:os");
 const { URL } = require("node:url");
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_DIR = path.join(__dirname, "public");
-const DATA_DIR = path.join(__dirname, "data");
+const BUNDLED_DB_FILE = path.join(__dirname, "data", "db.json");
+const DATA_DIR = process.env.VERCEL ? path.join(os.tmpdir(), "offkay-data") : path.join(__dirname, "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const SESSION_TTL = 1000 * 60 * 60 * 24 * 30;
 
@@ -119,7 +121,12 @@ function verifyPassword(password, stored) {
 
 function ensureDb() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify(seedDb(), null, 2));
+  if (!fs.existsSync(DB_FILE)) {
+    const initial = process.env.VERCEL && fs.existsSync(BUNDLED_DB_FILE)
+      ? fs.readFileSync(BUNDLED_DB_FILE, "utf8").replace(/^\uFEFF/, "")
+      : JSON.stringify(seedDb(), null, 2);
+    fs.writeFileSync(DB_FILE, initial);
+  }
 }
 
 function readDb() {
