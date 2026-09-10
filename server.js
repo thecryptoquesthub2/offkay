@@ -1,4 +1,4 @@
-﻿const http = require("node:http");
+const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -9,9 +9,12 @@ const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_DIR = path.join(__dirname, "public");
 const BUNDLED_DB_FILE = path.join(__dirname, "data", "db.json");
-const DATA_DIR = process.env.VERCEL ? path.join(os.tmpdir(), "offkay-data") : path.join(__dirname, "data");
+const DATA_DIR = process.env.OFFKAY_DATA_DIR || (process.env.VERCEL ? path.join(os.tmpdir(), "offkay-data") : path.join(__dirname, "data"));
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const SESSION_TTL = 1000 * 60 * 60 * 24 * 30;
+const LISTING_TYPES = ["Studio", "Shared", "En-suite", "Self-contained", "Apartment"];
+const LISTING_STATUSES = ["active", "hidden"];
+const EPOCH = "1970-01-01T00:00:00.000Z";
 
 const universities = [
   "University of Lagos","University of Ibadan","University of Nigeria, Nsukka","Obafemi Awolowo University",
@@ -44,7 +47,9 @@ function seedDb() {
       {
         id: landlordId, name: "David Okonkwo", email: "landlord@demo.test",
         password: hashPassword("demo1234"), role: "landlord", phone: "08030000001",
-        university: "University of Lagos", verified: true, createdAt: now
+        university: "University of Lagos", verified: true,
+        bio: "Property owner offering verified student accommodation near campus.",
+        createdAt: now
       },
       {
         id: tenantId, name: "Amara Obi", email: "tenant@demo.test",
@@ -94,7 +99,7 @@ function seedDb() {
     ],
     saved: [{userId:tenantId,listingId:"lst_palm"}],
     conversations: [
-      {id:"con_demo",memberIds:[tenantId,landlordId],listingId:"lst_palm",updatedAt:now}
+      {id:"con_demo",memberIds:[tenantId,landlordId],listingId:"lst_palm",updatedAt:now,reads:{}}
     ],
     messages: [
       {id:"msg_1",conversationId:"con_demo",senderId:landlordId,text:"Hello Amara, the studio is still available. Would you like to schedule a viewing?",createdAt:new Date(Date.now()-3600000).toISOString()},
@@ -102,7 +107,8 @@ function seedDb() {
     ],
     bookings: [],
     inspections: [],
-    reports: []
+    reports: [],
+    verifications: []
   };
 }
 
@@ -132,23 +138,50 @@ function ensureDb() {
 function readDb() {
   ensureDb();
   const db = JSON.parse(fs.readFileSync(DB_FILE, "utf8").replace(/^\uFEFF/, ""));
+  db.users ||= [];
+  db.sessions ||= [];
+  db.listings ||= [];
+  db.saved ||= [];
+  db.conversations ||= [];
+  db.messages ||= [];
+  db.bookings ||= [];
   db.inspections ||= [];
   db.reports ||= [];
   db.verifications ||= [];
+  db.conversations.forEach(conversation => { conversation.reads ||= {}; });
   return db;
 }
 
-let writeQueue = Promise.resolve();
-function writeDb(db) {
-  const serialized = JSON.stringify(db, null, 2);
-  writeQueue = writeQueue.then(() => fs.promises.writeFile(DB_FILE, serialized));
-  return writeQueue;
+// All API requests are serialized through one queue so every read-modify-write
+// is atomic. This prevents the duplicate-account race on concurrent signups.
+let apiChain = Promise.resolve();
+function serializeApi(handler) {
+  const run = apiChain.then(() => handler());
+  apiChain = run.catch(() => {});
+  return run;
 }
 
 function publicUser(user) {
   if (!user) return null;
   const { password, ...safe } = user;
   return safe;
+}
+
+// Privacy-safe profile shown to other users: no email, phone, or internal state.
+function profileView(account) {
+  if (!account) return null;
+  return {
+    id: account.id,
+    name: account.name,
+    role: account.role,
+    university: account.university,
+    verified: Boolean(account.verified),
+    hosting: account.hosting === true || account.role === "landlord",
+    bio: account.bio || "",
+    habits: Array.isArray(account.habits) ? account.habits : [],
+    budget: Number(account.budget || 0),
+    memberSince: account.createdAt || null
+  };
 }
 
 function parseCookies(req) {
@@ -213,6 +246,41 @@ function listingPayload(listing, db, user) {
   };
 }
 
+function conversationPayload(conversation, db, viewerId) {
+  const otherId = conversation.memberIds.find(memberId => memberId !== viewerId);
+  const other = db.users.find(item => item.id === otherId);
+  const messages = db.messages.filter(message => message.conversationId === conversation.id);
+  const last = [...messages].sort((a,b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
+  const listing = conversation.listingId ? db.listings.find(item => item.id === conversation.listingId) : null;
+  const readUpTo = conversation.reads?.[viewerId] || EPOCH;
+  const unread = messages.filter(message => message.senderId !== viewerId && message.createdAt > readUpTo).length;
+  return {
+    id: conversation.id,
+    listingId: conversation.listingId || null,
+    listingTitle: listing ? listing.title : null,
+    updatedAt: conversation.updatedAt,
+    other: profileView(other),
+    lastMessage: last || null,
+    unread
+  };
+}
+
+function removeUserFromDb(db, userId) {
+  db.users = db.users.filter(user => user.id !== userId);
+  db.sessions = db.sessions.filter(session => session.userId !== userId);
+  db.listings = db.listings.filter(listing => listing.ownerId !== userId);
+  db.saved = db.saved.filter(item => item.userId !== userId);
+  db.bookings = db.bookings.filter(item => item.tenantId !== userId && item.ownerId !== userId);
+  db.inspections = db.inspections.filter(item => item.tenantId !== userId && item.ownerId !== userId);
+  db.reports = db.reports.filter(item => item.reportedBy !== userId);
+  db.verifications = db.verifications.filter(item => item.userId !== userId);
+  const removedConversations = new Set(
+    db.conversations.filter(conversation => conversation.memberIds.includes(userId)).map(conversation => conversation.id)
+  );
+  db.conversations = db.conversations.filter(conversation => !conversation.memberIds.includes(userId));
+  db.messages = db.messages.filter(message => !removedConversations.has(message.conversationId));
+}
+
 async function api(req, res, url) {
   const db = readDb();
   const user = currentUser(req, db);
@@ -221,45 +289,56 @@ async function api(req, res, url) {
 
   if (route === "/api/bootstrap" && method === "GET") {
     const listings = db.listings.filter(item => item.status === "active").map(item => listingPayload(item, db, user));
+    const ownListings = user ? db.listings.filter(item => item.ownerId === user.id).map(item => listingPayload(item, db, user)) : [];
     const conversations = user ? db.conversations
       .filter(conversation => conversation.memberIds.includes(user.id))
-      .map(conversation => {
-        const otherId = conversation.memberIds.find(memberId => memberId !== user.id);
-        const other = db.users.find(item => item.id === otherId);
-        const messages = db.messages.filter(message => message.conversationId === conversation.id);
-        const last = messages.sort((a,b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
-        return {...conversation, other:publicUser(other), lastMessage:last || null};
-      }).sort((a,b) => b.updatedAt.localeCompare(a.updatedAt)) : [];
-    const bookings = user ? db.bookings.filter(item => item.tenantId === user.id || item.ownerId === user.id) : [];
+      .map(conversation => conversationPayload(conversation, db, user.id))
+      .sort((a,b) => b.updatedAt.localeCompare(a.updatedAt)) : [];
+    const bookings = user ? db.bookings
+      .filter(item => item.tenantId === user.id || item.ownerId === user.id)
+      .map(booking => {
+        const listing = db.listings.find(item => item.id === booking.listingId);
+        const tenant = db.users.find(item => item.id === booking.tenantId);
+        return { ...booking, propertyTitle: listing ? listing.title : "Removed property", tenantName: tenant ? tenant.name : "Student" };
+      }) : [];
     const inspections = user ? db.inspections.filter(item => item.tenantId === user.id || item.ownerId === user.id) : [];
-    const roommateCandidates = user && user.role === "tenant" ? db.users.filter(item => item.role === "tenant" && item.id !== user.id).map(candidate => {
-      const sameUniversity = candidate.university === user.university;
-      const sharedHabits = (candidate.habits || []).filter(habit => (user.habits || []).includes(habit)).length;
-      const budgetClose = user.budget && candidate.budget ? Math.abs(user.budget-candidate.budget)<=150000 : false;
-      return {...publicUser(candidate),score:Math.min(98,62+(sameUniversity?20:0)+(sharedHabits*5)+(budgetClose?6:0))};
-    }).sort((a,b)=>b.score-a.score) : [];
+    const roommateCandidates = user && user.role === "tenant" ? db.users
+      .filter(item => item.id !== user.id && (item.role === "tenant" || item.hosting === true))
+      .map(candidate => {
+        const sameUniversity = candidate.university === user.university;
+        const sharedHabits = (candidate.habits || []).filter(habit => (user.habits || []).includes(habit)).length;
+        const budgetClose = user.budget && candidate.budget ? Math.abs(user.budget-candidate.budget)<=150000 : false;
+        return {...profileView(candidate), score:Math.min(98,62+(sameUniversity?20:0)+(sharedHabits*5)+(budgetClose?6:0))};
+      }).sort((a,b)=>b.score-a.score) : [];
     const verification = user ? db.verifications.filter(item => item.userId === user.id).at(-1) || null : null;
-    return json(res, 200, { user:publicUser(user), universities:[...universities].sort((a,b)=>a.localeCompare(b)), listings, conversations, bookings, inspections, roommateCandidates, verification });
+    return json(res, 200, {
+      user: publicUser(user),
+      universities: [...new Set(universities)].sort((a,b)=>a.localeCompare(b)),
+      listings, ownListings, conversations, bookings, inspections, roommateCandidates, verification
+    });
   }
 
   if (route === "/api/auth/signup" && method === "POST") {
     const body = await parseBody(req);
     const name = String(body.name || "").trim();
     const email = String(body.email || "").trim().toLowerCase();
+    const password = String(body.password || "");
     const role = body.role === "landlord" ? "landlord" : "tenant";
-    if (name.length < 2 || !email.includes("@") || String(body.password || "").length < 8) {
-      return error(res, 400, "Enter a valid name, email, and password of at least 8 characters");
-    }
-    if (db.users.some(item => item.email === email)) return error(res, 409, "An account with this email already exists");
+    if (name.length < 2 || name.length > 80) return error(res, 400, "Enter your full name");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return error(res, 400, "Enter a valid email address");
+    if (password.length < 8) return error(res, 400, "Password must be at least 8 characters");
+    if (db.users.some(item => item.email === email)) return error(res, 409, "An account with this email already exists. Try signing in instead.");
+    const university = universities.includes(body.university) ? body.university : universities[0];
     const newUser = {
-      id:id("usr"), name, email, password:hashPassword(body.password), role,
-      phone:String(body.phone || "").trim(), university:String(body.university || universities[0]),
-      verified:false, bio:"", budget:0, habits:[], createdAt:new Date().toISOString()
+      id:id("usr"), name, email, password:hashPassword(password), role,
+      phone:String(body.phone || "").replace(/[^\d+]/g,"").slice(0,20),
+      university, verified:false, bio:"", budget:0, habits:[], createdAt:new Date().toISOString()
     };
     db.users.push(newUser);
     const token = id("ses");
     db.sessions.push({token,userId:newUser.id,expiresAt:Date.now()+SESSION_TTL});
-    await writeDb(db);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res, 201, {user:publicUser(newUser)}, {"Set-Cookie":`ch_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`});
   }
 
@@ -269,14 +348,32 @@ async function api(req, res, url) {
     if (!account || !verifyPassword(body.password, account.password)) return error(res, 401, "Email or password is incorrect");
     const token = id("ses");
     db.sessions.push({token,userId:account.id,expiresAt:Date.now()+SESSION_TTL});
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res, 200, {user:publicUser(account)}, {"Set-Cookie":`ch_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`});
   }
 
   if (route === "/api/auth/logout" && method === "POST") {
     const token = parseCookies(req).ch_session;
     db.sessions = db.sessions.filter(item => item.token !== token);
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    return json(res, 200, {ok:true}, {"Set-Cookie":"ch_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"});
+  }
+
+  if (route === "/api/auth/logout-all" && method === "POST") {
+    const account = requireUser(req,res,db); if (!account) return;
+    db.sessions = db.sessions.filter(item => item.userId !== account.id);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    return json(res, 200, {ok:true}, {"Set-Cookie":"ch_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"});
+  }
+
+  if (route === "/api/account" && method === "DELETE") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const body = await parseBody(req);
+    if (!verifyPassword(String(body.password || ""), account.password)) {
+      return error(res, 403, "Enter your password to confirm account deletion");
+    }
+    removeUserFromDb(db, account.id);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res, 200, {ok:true}, {"Set-Cookie":"ch_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"});
   }
 
@@ -286,9 +383,9 @@ async function api(req, res, url) {
     ["name","phone","university","bio"].forEach(key => {
       if (body[key] !== undefined) account[key] = String(body[key]).trim();
     });
-    if (body.budget !== undefined) account.budget = Number(body.budget) || 0;
+    if (body.budget !== undefined) account.budget = Math.max(0, Number(body.budget) || 0);
     if (Array.isArray(body.habits)) account.habits = body.habits.slice(0,8).map(String);
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res, 200, {user:publicUser(account)});
   }
 
@@ -296,7 +393,7 @@ async function api(req, res, url) {
     const account = requireUser(req,res,db); if (!account) return;
     account.hosting = true;
     account.hostActivatedAt = new Date().toISOString();
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res, 200, {user:publicUser(account)});
   }
 
@@ -313,7 +410,7 @@ async function api(req, res, url) {
     };
     db.verifications.push(verification);
     account.verificationStatus = "manual_review";
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,201,{verification,user:publicUser(account)});
   }
 
@@ -322,21 +419,25 @@ async function api(req, res, url) {
     if (!canHost(account)) return error(res, 403, "Activate hosting before publishing a property");
     const body = await parseBody(req);
     if (!body.title || !body.area || !body.price) return error(res,400,"Title, area, and annual rent are required");
+    const price = Number(body.price);
+    if (!Number.isFinite(price) || price < 10000) return error(res,400,"Enter an annual rent of at least ₦10,000");
     const listing = {
-      id:id("lst"),ownerId:account.id,title:String(body.title).trim(),
-      university:String(body.university || account.university),area:String(body.area).trim(),
-      price:Number(body.price),type:String(body.type || "Studio"),
-      bedrooms:Number(body.bedrooms || 1),bathrooms:Number(body.bathrooms || 1),
-      description:String(body.description || "").trim(),
+      id:id("lst"),ownerId:account.id,title:String(body.title).trim().slice(0,120),
+      university:universities.includes(body.university) ? body.university : account.university,
+      area:String(body.area).trim().slice(0,120),
+      price,type:LISTING_TYPES.includes(body.type) ? body.type : "Studio",
+      bedrooms:Math.min(10,Math.max(1,Number(body.bedrooms) || 1)),
+      bathrooms:Math.min(10,Math.max(1,Number(body.bathrooms) || 1)),
+      description:String(body.description || "").trim().slice(0,2000),
       amenities:Array.isArray(body.amenities) ? body.amenities.map(String).slice(0,10) : [],
       photos:Array.isArray(body.photos) ? body.photos.filter(photo => typeof photo === "string" && photo.startsWith("data:image/")).slice(0,4) : [],
       latitude:Number(body.latitude || 0),longitude:Number(body.longitude || 0),
-      source:canHost(account) ? "host" : "tenant-share",
-      verified:false,status:"active",accent:["emerald","amber","blue","rose"][db.listings.length%4],
+      source:"host",verified:false,status:"active",
+      accent:["emerald","amber","blue","rose"][db.listings.length%4],
       createdAt:new Date().toISOString()
     };
     db.listings.unshift(listing);
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,201,{listing:listingPayload(listing,db,account)});
   }
 
@@ -347,14 +448,29 @@ async function api(req, res, url) {
     if (!listing) return error(res,404,"Property not found");
     if (listing.ownerId !== account.id) return error(res,403,"You cannot edit this property");
     const body = await parseBody(req);
-    ["title","area","university","type","description","status"].forEach(key => {
+    ["title","area","university","type","description"].forEach(key => {
       if (body[key] !== undefined) listing[key] = String(body[key]).trim();
     });
+    if (body.status !== undefined) {
+      if (!LISTING_STATUSES.includes(body.status)) return error(res,400,"Unknown listing status");
+      listing.status = body.status;
+    }
     ["price","bedrooms","bathrooms","latitude","longitude"].forEach(key => {
       if (body[key] !== undefined) listing[key] = Number(body[key]);
     });
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,200,{listing:listingPayload(listing,db,account)});
+  }
+
+  if (listingMatch && method === "DELETE") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const listing = db.listings.find(item => item.id === listingMatch[1]);
+    if (!listing) return error(res,404,"Property not found");
+    if (listing.ownerId !== account.id) return error(res,403,"You cannot delete this property");
+    db.listings = db.listings.filter(item => item.id !== listing.id);
+    db.saved = db.saved.filter(item => item.listingId !== listing.id);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    return json(res,200,{ok:true});
   }
 
   const inspectionMatch = route.match(/^\/api\/listings\/([^/]+)\/inspections$/);
@@ -363,6 +479,7 @@ async function api(req, res, url) {
     if (account.role !== "tenant") return error(res,403,"Only tenants can request an inspection");
     const listing = db.listings.find(item => item.id === inspectionMatch[1] && item.status === "active");
     if (!listing) return error(res,404,"Property not found");
+    if (listing.ownerId === account.id) return error(res,400,"This is your own property");
     const body = await parseBody(req);
     const inspection = {
       id:id("ins"),listingId:listing.id,tenantId:account.id,ownerId:listing.ownerId,
@@ -373,7 +490,7 @@ async function api(req, res, url) {
       status:"requested",createdAt:new Date().toISOString()
     };
     db.inspections.push(inspection);
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,201,{inspection});
   }
 
@@ -391,16 +508,18 @@ async function api(req, res, url) {
       status:"received",createdAt:new Date().toISOString()
     };
     db.reports.push(report);
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,201,{report});
   }
 
   const saveMatch = route.match(/^\/api\/listings\/([^/]+)\/save$/);
   if (saveMatch && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
+    const listing = db.listings.find(item => item.id === saveMatch[1]);
+    if (!listing) return error(res,404,"Property not found");
     const index = db.saved.findIndex(item => item.userId === account.id && item.listingId === saveMatch[1]);
     if (index >= 0) db.saved.splice(index,1); else db.saved.push({userId:account.id,listingId:saveMatch[1]});
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,200,{saved:index<0});
   }
 
@@ -409,13 +528,14 @@ async function api(req, res, url) {
     const account = requireUser(req,res,db); if (!account) return;
     const listing = db.listings.find(item => item.id === contactMatch[1]);
     if (!listing) return error(res,404,"Property not found");
+    if (listing.ownerId === account.id) return error(res,400,"This is your own listing");
     let conversation = db.conversations.find(item => item.listingId === listing.id && item.memberIds.includes(account.id) && item.memberIds.includes(listing.ownerId));
     if (!conversation) {
-      conversation = {id:id("con"),memberIds:[account.id,listing.ownerId],listingId:listing.id,updatedAt:new Date().toISOString()};
+      conversation = {id:id("con"),memberIds:[account.id,listing.ownerId],listingId:listing.id,updatedAt:new Date().toISOString(),reads:{}};
       db.conversations.push(conversation);
       db.messages.push({id:id("msg"),conversationId:conversation.id,senderId:account.id,text:`Hi, I am interested in ${listing.title}. Is it still available?`,createdAt:new Date().toISOString()});
     }
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,200,{conversationId:conversation.id});
   }
 
@@ -425,7 +545,9 @@ async function api(req, res, url) {
     const conversation = db.conversations.find(item => item.id === messagesMatch[1] && item.memberIds.includes(account.id));
     if (!conversation) return error(res,404,"Conversation not found");
     const messages = db.messages.filter(item => item.conversationId === conversation.id).sort((a,b) => a.createdAt.localeCompare(b.createdAt));
-    return json(res,200,{messages});
+    conversation.reads[account.id] = new Date().toISOString();
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    return json(res,200,{conversation:conversationPayload(conversation, db, account.id),messages});
   }
   if (messagesMatch && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
@@ -435,19 +557,21 @@ async function api(req, res, url) {
     const text = String(body.text || "").trim();
     if (!text) return error(res,400,"Message cannot be empty");
     const message = {id:id("msg"),conversationId:conversation.id,senderId:account.id,text:text.slice(0,2000),createdAt:new Date().toISOString()};
-    db.messages.push(message); conversation.updatedAt=message.createdAt;
-    await writeDb(db);
+    db.messages.push(message);
+    conversation.updatedAt = message.createdAt;
+    conversation.reads[account.id] = message.createdAt;
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,201,{message});
   }
 
   if (route === "/api/roommates" && method === "GET") {
     const account = requireUser(req,res,db); if (!account) return;
     if (account.role !== "tenant") return json(res,200,{matches:[]});
-    const matches = db.users.filter(item => item.role === "tenant" && item.id !== account.id).map(candidate => {
+    const matches = db.users.filter(item => item.id !== account.id && (item.role === "tenant" || item.hosting === true)).map(candidate => {
       const sameUniversity = candidate.university === account.university;
       const sharedHabits = (candidate.habits || []).filter(habit => (account.habits || []).includes(habit)).length;
       const budgetClose = account.budget && candidate.budget ? Math.abs(account.budget-candidate.budget)<=150000 : false;
-      return {...publicUser(candidate),score:Math.min(98,62+(sameUniversity?20:0)+(sharedHabits*5)+(budgetClose?6:0))};
+      return {...profileView(candidate),score:Math.min(98,62+(sameUniversity?20:0)+(sharedHabits*5)+(budgetClose?6:0))};
     }).sort((a,b)=>b.score-a.score);
     return json(res,200,{matches});
   }
@@ -455,32 +579,43 @@ async function api(req, res, url) {
   if (route === "/api/roommates/connect" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
     const body = await parseBody(req);
-    const candidate = db.users.find(item => item.id === body.userId && item.role === "tenant");
-    if (!candidate) return error(res,404,"Student not found");
+    const candidate = db.users.find(item => item.id === body.userId && (item.role === "tenant" || item.hosting === true));
+    if (!candidate || candidate.id === account.id) return error(res,404,"Student not found");
     let conversation = db.conversations.find(item => !item.listingId && item.memberIds.includes(account.id) && item.memberIds.includes(candidate.id));
     if (!conversation) {
-      conversation = {id:id("con"),memberIds:[account.id,candidate.id],listingId:null,updatedAt:new Date().toISOString()};
+      conversation = {id:id("con"),memberIds:[account.id,candidate.id],listingId:null,updatedAt:new Date().toISOString(),reads:{}};
       db.conversations.push(conversation);
       db.messages.push({id:id("msg"),conversationId:conversation.id,senderId:account.id,text:"Hi! Offkay matched us as potential roommates. Would you like to chat?",createdAt:new Date().toISOString()});
     }
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,200,{conversationId:conversation.id});
+  }
+
+  const userMatch = route.match(/^\/api\/users\/([^/]+)$/);
+  if (userMatch && method === "GET") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const target = db.users.find(item => item.id === userMatch[1]);
+    if (!target) return error(res,404,"User not found");
+    return json(res,200,{user:profileView(target)});
   }
 
   if (route === "/api/bookings" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
-    if (account.role !== "tenant") return error(res,403,"Only tenants can book a property");
+    if (account.role !== "tenant") return error(res,403,"Only tenant accounts can book a property");
     const body = await parseBody(req);
     const listing = db.listings.find(item => item.id === body.listingId && item.status === "active");
     if (!listing) return error(res,404,"Property not found");
+    if (listing.ownerId === account.id) return error(res,400,"You cannot book your own property");
+    const existing = db.bookings.find(item => item.listingId === listing.id && item.tenantId === account.id && (item.status === "awaiting_payment" || item.status === "paid"));
+    if (existing) return error(res,409,"You already have an active booking for this property. Check it in your profile.");
+    const splitCount = Math.min(4, Math.max(1, Math.round(Number(body.splitCount) || 1)));
     const booking = {
       id:id("bkg"),listingId:listing.id,tenantId:account.id,ownerId:listing.ownerId,
-      amount:listing.price,platformFee:0,
-      splitCount:Math.min(4,Math.max(1,Number(body.splitCount || 1))),
+      amount:listing.price,platformFee:0,splitCount,paymentShare:Math.round(listing.price/splitCount),
       status:"awaiting_payment",createdAt:new Date().toISOString()
     };
     db.bookings.push(booking);
-    await writeDb(db);
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,201,{booking});
   }
 
@@ -489,8 +624,11 @@ async function api(req, res, url) {
     const account = requireUser(req,res,db); if (!account) return;
     const booking = db.bookings.find(item => item.id === payMatch[1] && item.tenantId === account.id);
     if (!booking) return error(res,404,"Booking not found");
-    booking.status="paid"; booking.paidAt=new Date().toISOString(); booking.reference=`HH-${Date.now()}`;
-    await writeDb(db);
+    if (booking.status === "paid") return json(res,200,{booking});
+    booking.status = "paid";
+    booking.paidAt = new Date().toISOString();
+    booking.reference = `HH-${Date.now()}`;
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,200,{booking});
   }
 
@@ -522,7 +660,7 @@ ensureDb();
 async function handler(req,res) {
   const url = new URL(req.url,`http://${req.headers.host || "localhost"}`);
   try {
-    if (url.pathname.startsWith("/api/")) return await api(req,res,url);
+    if (url.pathname.startsWith("/api/")) return await serializeApi(() => api(req,res,url));
     return serveStatic(req,res,url);
   } catch (err) {
     console.error(err);

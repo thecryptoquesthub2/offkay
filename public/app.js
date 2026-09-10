@@ -2,6 +2,7 @@
   user: null,
   universities: [],
   listings: [],
+  ownListings: [],
   roommateCandidates: [],
   verification: null,
   conversations: [],
@@ -30,6 +31,7 @@ const mapUrl = listing => `https://www.google.com/maps/search/?api=1&query=${enc
 const icon = name => `<svg class="off-icon" aria-hidden="true"><use href="/offkay-icons.svg#${name}"></use></svg>`;
 const canHost = () => state.user?.role === "landlord" || state.user?.hosting === true;
 const inHostView = () => canHost() && state.hostView;
+const unreadTotal = () => state.conversations.reduce((sum,item)=>sum+(Number(item.unread)||0),0);
 
 function applyTheme(theme) {
   state.theme = theme;
@@ -99,6 +101,7 @@ async function bootstrap() {
     populateUniversities();
     if (state.user) enterApp(); else showAuth();
   } catch (error) {
+    showAuth();
     toast(error.message);
   }
 }
@@ -119,11 +122,18 @@ function enterApp() {
   $("#topAvatar").textContent = initials(state.user.name);
   $("#topName").textContent = firstName(state.user.name);
   $("#topRole").textContent = inHostView() ? "Host" : "Guest";
-  $("#messageBadge").style.display = state.conversations.length ? "block" : "none";
+  renderNotificationDot();
   $("#sidebarCard").innerHTML = inHostView()
     ? `<span>Grow your portfolio</span><strong>Publish a verified property in minutes.</strong><button class="button light small" data-action="new-listing">Add property</button>`
     : `<span>Roommate Match</span><strong>Living is easier with the right person.</strong><button class="button light small" data-action="open-matches">Find a match</button>`;
   renderAll();
+}
+
+function renderNotificationDot() {
+  const dot = $("#notificationButton i");
+  if (dot) dot.style.display = unreadTotal() ? "block" : "none";
+  const badge = $("#messageBadge");
+  if (badge) badge.style.display = unreadTotal() ? "block" : "none";
 }
 
 function renderAll() {
@@ -149,14 +159,16 @@ function switchTab(tab, render = true) {
 
 function listingCard(listing, landlordMode = false) {
   const photo = listing.photos?.[0];
+  const mine = state.user && listing.ownerId === state.user.id;
   return `<article class="listing-card">
     <div class="listing-image ${esc(listing.accent || "emerald")}">
       ${photo ? `<img src="${photo}" alt="${esc(listing.title)}">` : ""}
       <div class="building"></div>
       <span class="verify-tag">${icon("verified")} ${listing.verified ? "Verified" : "Under review"}</span>
-      ${landlordMode
-        ? `<span class="status-tag">${esc(listing.status)}</span>`
-        : `<button class="save-button ${listing.saved ? "saved" : ""}" data-action="save-listing" data-id="${listing.id}" aria-label="Save property">${icon("heart")}</button>`}
+      ${mine ? `<span class="status-tag">Your listing</span>`
+        : landlordMode
+          ? `<span class="status-tag">${esc(listing.status)}</span>`
+          : `<button class="save-button ${listing.saved ? "saved" : ""}" data-action="save-listing" data-id="${listing.id}" aria-label="Save property">${icon("heart")}</button>`}
     </div>
     <div class="listing-info">
       <div class="listing-title-row"><h3>${esc(listing.title)}</h3><span class="rating">&#9733; 4.${7 + (listing.title.length % 3)}</span></div>
@@ -172,7 +184,7 @@ function listingCard(listing, landlordMode = false) {
 
 function roommateCard(person) {
   return `<article class="roommate-card glass">
-    <div class="roommate-avatar">${initials(person.name)}</div>
+    <button class="roommate-avatar" data-action="view-roommate" data-id="${person.id}" aria-label="Open profile">${initials(person.name)}</button>
     <div class="roommate-copy">
       <div><h3>${esc(person.name)}</h3><span>${person.score || 72}% match</span></div>
       <p>${esc(person.bio || "Verified student looking for a compatible co-living match.")}</p>
@@ -207,7 +219,7 @@ function tenantHome() {
 }
 
 function landlordHome() {
-  const mine = state.listings.filter(item => item.ownerId === state.user.id);
+  const mine = state.ownListings;
   const myBookings = state.bookings.filter(item => item.ownerId === state.user.id);
   const revenue = myBookings.filter(item => item.status === "paid").reduce((sum,item)=>sum+item.amount,0);
   return `
@@ -232,8 +244,8 @@ function propertyTable(items) {
     ${items.map(item=>`<div class="property-row">
       <div class="property-name"><span class="property-thumb"></span><span><b>${esc(item.title)}</b><span>${esc(item.area)}</span></span></div>
       <b>${money(item.price)}</b><span>${esc(item.type)}</span>
-      <span class="table-status ${item.verified?"":"pending"}">${item.verified?"Published":"Under review"}</span>
-      <button class="icon-more" data-action="edit-listing" data-id="${item.id}">&rarr;</button>
+      <span class="table-status ${item.status==="active"?"":"pending"}">${item.status==="active"?(item.verified?"Published":"Under review"):"Hidden"}</span>
+      <span class="property-actions"><button class="icon-more" data-action="view-listing" data-id="${item.id}" aria-label="Open property">&rarr;</button><button class="icon-more" data-action="edit-listing" data-id="${item.id}" aria-label="Edit property">&#9998;</button><button class="icon-more danger" data-action="confirm-delete-listing" data-id="${item.id}" aria-label="Delete property">&times;</button></span>
     </div>`).join("")}
   </div>`;
 }
@@ -276,7 +288,7 @@ function renderExplore() {
   $("#tab-explore").innerHTML = `
     <div class="page-head"><div><span class="eyebrow">${hosting?"Host tools":"Explore Offkay"}</span><h1>${hosting?"Manage your places.":"Find a home, then find your people."}</h1><p>${hosting?"Review your properties and incoming inspection requests.":"Search verified homes and compatible roommates with filters made for each."}</p></div><div class="page-actions"><button class="button subtle" data-action="open-inspections">${icon("calendar")} Inspections</button>${hosting?`<button class="button primary" data-action="new-listing">${icon("plus")} Add a house</button>`:""}</div></div>
     ${hosting ? "" : `<div class="liquid-segment" aria-label="Explore view"><button class="${state.exploreMode==="homes"?"active":""}" data-action="explore-mode" data-mode="homes">Homes</button><button class="${state.exploreMode==="map"?"active":""}" data-action="explore-mode" data-mode="map">Map</button><button class="${browsingRoommates?"active":""}" data-action="explore-mode" data-mode="roommates">Roommates</button></div>`}
-    ${hosting ? `<div class="section-head"><div><h2>Your properties</h2><p>Published places and verification status.</p></div></div>${propertyTable(state.listings.filter(item=>item.ownerId===state.user.id))}` : browsingRoommates ? `
+    ${hosting ? `<div class="section-head"><div><h2>Your properties</h2><p>Published places and verification status. Hide or delete test listings when you are done.</p></div></div>${propertyTable(state.ownListings)}` : browsingRoommates ? `
       <div class="filter-panel glass">
         <div class="filter-panel-head"><div><b>Find a roommate</b><small>Match by campus, budget, lifestyle, and verification.</small></div><button class="link-button" data-action="reset-roommate-filters">Clear</button></div>
         <div class="filter-bar roommate-filter-bar">
@@ -319,7 +331,7 @@ function conversationRow(conversation) {
   return `<button class="conversation ${active?"active":""}" data-action="open-conversation" data-id="${conversation.id}">
     <span class="avatar">${initials(conversation.other?.name)}</span>
     <span class="conversation-text"><b>${esc(conversation.other?.name || "Offkay user")}</b><span>${esc(conversation.lastMessage?.text || "Start the conversation")}</span></span>
-    <time>${conversation.lastMessage ? time(conversation.lastMessage.createdAt) : ""}</time>
+    <time>${conversation.lastMessage ? time(conversation.lastMessage.createdAt) : ""}${conversation.unread ? `<i class="unread-dot">${conversation.unread}</i>` : ""}</time>
   </button>`;
 }
 
@@ -335,14 +347,40 @@ function renderMessages() {
       ${current ? chatMarkup(current) : `<div class="no-chat"><div><div class="empty-icon">&#9676;</div><b>Select a conversation</b><p>Your messages will appear here.</p></div></div>`}
     </div>`;
   if (current) loadMessages(current.id);
+  else setChatPolling(null);
 }
 
 function chatMarkup(conversation) {
   return `<section class="chat">
-    <header class="chat-head"><button class="icon-more mobile-chat-back" data-action="back-to-conversations">&larr;</button><span class="avatar">${initials(conversation.other?.name)}</span><span><b>${esc(conversation.other?.name)}</b><small>${conversation.other?.verified?"&#10003; Verified user":"Offkay member"}</small></span></header>
+    <header class="chat-head"><button class="icon-more mobile-chat-back" data-action="back-to-conversations">&larr;</button><button class="chat-head-user" data-action="view-roommate" data-id="${conversation.other?.id || ""}"><span class="avatar">${initials(conversation.other?.name)}</span><span><b>${esc(conversation.other?.name)}</b><small>${conversation.other?.verified?"&#10003; Verified user":"Offkay member"}</small></span></button>${conversation.listingTitle ? `<span class="chat-listing-tag">${esc(conversation.listingTitle)}</span>` : ""}</header>
     <div class="chat-messages" id="chatMessages"><div class="no-chat">Loading messages...</div></div>
     <form class="chat-compose" id="messageForm"><input name="text" autocomplete="off" placeholder="Write a message..." required><button class="send-button" aria-label="Send">&uarr;</button></form>
   </section>`;
+}
+
+let chatPoll = null;
+function setChatPolling(conversationId) {
+  clearInterval(chatPoll);
+  chatPoll = null;
+  if (!conversationId || !state.user) return;
+  chatPoll = setInterval(async () => {
+    if (!state.user || state.activeConversation !== conversationId) return;
+    try {
+      const data = await request(`/api/conversations/${conversationId}/messages`);
+      if (state.activeConversation !== conversationId) return;
+      const known = state.messages.map(message=>message.id).join(",");
+      const incoming = data.messages.map(message=>message.id).join(",");
+      state.messages = data.messages;
+      if (known !== incoming) renderMessageList(data.messages);
+    } catch { /* keep polling silently */ }
+  }, 4000);
+}
+
+function renderMessageList(messages) {
+  const box = $("#chatMessages");
+  if (!box) return;
+  box.innerHTML = messages.map(message=>`<div class="bubble ${message.senderId===state.user.id?"mine":""}">${esc(message.text)}<time>${time(message.createdAt)}</time></div>`).join("") || `<div class="no-chat">No messages yet.</div>`;
+  box.scrollTop = box.scrollHeight;
 }
 
 async function loadMessages(conversationId) {
@@ -350,10 +388,13 @@ async function loadMessages(conversationId) {
     const data = await request(`/api/conversations/${conversationId}/messages`);
     if (state.activeConversation !== conversationId) return;
     state.messages = data.messages;
-    const box = $("#chatMessages");
-    if (!box) return;
-    box.innerHTML = data.messages.map(message=>`<div class="bubble ${message.senderId===state.user.id?"mine":""}">${esc(message.text)}<time>${time(message.createdAt)}</time></div>`).join("") || `<div class="no-chat">No messages yet.</div>`;
-    box.scrollTop = box.scrollHeight;
+    renderMessageList(data.messages);
+    setChatPolling(conversationId);
+    const fresh = state.conversations.find(item=>item.id===conversationId);
+    if (fresh && data.conversation) {
+      Object.assign(fresh, data.conversation);
+      renderNotificationDot();
+    }
     const form = $("#messageForm");
     if (form) form.onsubmit = sendMessage;
   } catch (error) { toast(error.message); }
@@ -363,13 +404,17 @@ async function sendMessage(event) {
   event.preventDefault();
   const input = event.currentTarget.elements.text;
   const text = input.value.trim();
-  if (!text) return;
+  if (!text || !state.activeConversation) return;
   input.value = "";
   try {
     await request(`/api/conversations/${state.activeConversation}/messages`,{method:"POST",body:JSON.stringify({text})});
+    const data = await request(`/api/conversations/${state.activeConversation}/messages`);
+    state.messages = data.messages;
+    renderMessageList(data.messages);
     await refreshData(false);
-    state.activeConversation = state.activeConversation;
-    renderMessages();
+    renderNotificationDot();
+    const rows = $("#conversationRows");
+    if (rows) rows.innerHTML = state.conversations.map(conversationRow).join("");
   } catch (error) { input.value = text; toast(error.message); }
 }
 
@@ -391,7 +436,8 @@ function renderProfile() {
         </div>
         <div class="account-actions">
           <button class="settings-row" data-action="open-verification">${icon("verified")}<span><b>Verification</b><small>${esc(state.verification?.status || state.user.verificationStatus || (state.user.verified ? "verified" : "not submitted"))}</small></span><em>&rarr;</em></button>
-          <button class="settings-row" data-action="${canHost() ? "switch-view" : "activate-host"}">${icon("home")}<span><b>${canHost() ? (inHostView() ? "Switch to guest view" : "Switch to host view") : "Become a host"}</b><small>${canHost() ? "Your guest account and roommate tools stay available" : "List spaces without losing your guest account"}</small></span><em>&rarr;</em></button>
+          <button class="settings-row" data-action="confirm-logout">${icon("settings")}<span><b>Sign out</b><small>End this session on this device</small></span><em>&rarr;</em></button>
+          <button class="settings-row" data-action="confirm-delete-account">${icon("settings")}<span><b>Delete my account</b><small>Permanently remove your profile and data</small></span><em>&rarr;</em></button>
         </div>
       </aside>
       <form class="profile-form glass form-stack" id="profileForm">
@@ -403,8 +449,23 @@ function renderProfile() {
         <label>Lifestyle preferences<div class="habit-picker">${habits.map(habit=>`<button type="button" class="habit ${(state.user.habits||[]).includes(habit)?"selected":""}" data-action="toggle-habit" data-habit="${habit}">${habit}</button>`).join("")}</div></label>`:""}
         <button class="button primary" type="submit">Save profile changes</button>
       </form>
-    </div>`;
+    </div>
+    <div class="section-head"><div><h2>Bookings &amp; payments</h2><p>Every booking on your account and its payment state.</p></div></div>
+    ${bookingsList()}`;
   $("#profileForm").onsubmit = saveProfile;
+}
+
+function bookingsList() {
+  if (!state.bookings.length) return emptyState("No bookings yet","Choose a home and use Book &amp; split rent to create your first booking.");
+  return `<div class="settings-stack booking-stack">${state.bookings.map(booking=>{
+    const isTenant = booking.tenantId === state.user.id;
+    const share = booking.paymentShare || Math.round(booking.amount / (booking.splitCount || 1));
+    return `<div class="settings-row booking-row">
+      <span class="metric-icon">${icon("home")}</span>
+      <span><b>${esc(booking.propertyTitle || "Property")}</b><small>${isTenant?`Your share ${money(share)} · ${booking.splitCount>1?`split ${booking.splitCount} ways`:"solo"} · ${booking.status.replace(/_/g," ")}`:`${esc(booking.tenantName || "Student")} · ${money(booking.amount)} · ${booking.status.replace(/_/g," ")}`}</small></span>
+      ${isTenant && booking.status === "awaiting_payment" ? `<button class="button primary small" data-action="resume-payment" data-id="${booking.id}">Pay now</button>` : `<em>${booking.status === "paid" ? "&#10003; Paid" : ""}</em>`}
+    </div>`;
+  }).join("")}</div>`;
 }
 
 async function saveProfile(event) {
@@ -418,7 +479,9 @@ async function saveProfile(event) {
       name:form.get("name"),phone:form.get("phone"),university:form.get("university"),
       bio:form.get("bio"),budget:form.get("budget"),habits
     })});
-    state.user = data.user; enterApp(); switchTab("profile"); toast("Profile updated");
+    state.user = data.user;
+    await refreshData(false);
+    enterApp(); switchTab("profile"); toast("Profile updated");
   } catch(error) { toast(error.message); }
   finally { setLoading(button,false); }
 }
@@ -431,13 +494,61 @@ function settingsSheet() {
     {id:"midnight",name:"Midnight",note:"Low-light viewing",colors:["#181B20","#8DBFAC","#303B43","#F08A87"]}
   ];
   modal(`
-    <div class="modal-head"><div><span class="eyebrow">Appearance</span><h2>Choose a palette</h2><p>Each palette preserves Offkay’s contrast, safety states, and housing-first hierarchy.</p></div><button class="close-button">&times;</button></div>
+    <div class="modal-head"><div><span class="eyebrow">Settings</span><h2>Account &amp; appearance</h2><p>Palettes, hosting, verification, and your sign-out controls.</p></div><button class="close-button">&times;</button></div>
     <div class="settings-stack">
       <button class="settings-row" data-action="open-verification">${icon("verified")} <span><b>Manual verification</b><small>NIN, ID card, and student/host document</small></span><em>${esc(state.verification?.status || state.user.verificationStatus || "not submitted")}</em></button>
       ${canHost() ? `<button class="settings-row" data-action="switch-view">${icon("home")} <span><b>${inHostView() ? "Switch to guest view" : "Switch to host view"}</b><small>Keep your bookings and roommate matching in the same account</small></span><em>${inHostView() ? "Host" : "Guest"}</em></button><button class="settings-row" data-action="new-listing">${icon("plus")} <span><b>Add a house</b><small>Every new property goes through verification</small></span><em>Host</em></button>` : `<button class="settings-row" data-action="activate-host">${icon("home")} <span><b>Become a host</b><small>List spaces while keeping your guest account and roommate profile</small></span><em>Start</em></button>`}
+      <button class="settings-row" data-action="confirm-logout">${icon("settings")} <span><b>Sign out</b><small>End this session on this device</small></span><em>&rarr;</em></button>
+      <button class="settings-row danger-row" data-action="confirm-delete-account">${icon("settings")} <span><b>Delete my account</b><small>Permanently remove your profile, listings, and messages</small></span><em>&rarr;</em></button>
     </div>
     <div class="theme-grid">${themes.map(theme=>`<button class="theme-choice ${state.theme===theme.id?"active":""}" data-action="set-theme" data-theme="${theme.id}"><span class="theme-swatches">${theme.colors.map(color=>`<i style="background:${color}"></i>`).join("")}</span><b>${theme.name}</b><small>${theme.note}</small></button>`).join("")}</div>
     <div class="payment-note">Offkay is the default brand theme. Your preference is saved on this device.</div>`);
+}
+
+function confirmLogout() {
+  modal(`
+    <div class="modal-head"><div><h2>Sign out of Offkay?</h2><p>You can sign back in any time with your email and password.</p></div><button class="close-button">&times;</button></div>
+    <div class="detail-actions"><button class="button subtle" data-action="close-modal">Stay signed in</button><button class="button primary" data-action="do-logout">Sign out &rarr;</button></div>`);
+}
+
+async function doLogout() {
+  try { await request("/api/auth/logout",{method:"POST"}); }
+  catch { /* clear locally even if the request failed */ }
+  clearInterval(chatPoll);
+  state.user = null;
+  state.activeTab = "home";
+  state.activeConversation = null;
+  state.messages = [];
+  closeModal();
+  showAuth();
+  setAuthMode("login");
+  toast("Signed out");
+  bootstrap();
+}
+
+function confirmDeleteAccount() {
+  modal(`
+    <div class="modal-head"><div><h2>Delete your account?</h2><p>This removes your profile, properties, bookings, and all conversations. This cannot be undone.</p></div><button class="close-button">&times;</button></div>
+    <form class="form-stack" id="deleteAccountForm">
+      <label>Confirm your password<input name="password" type="password" autocomplete="current-password" placeholder="Your password" required></label>
+      <button class="button danger wide" type="submit">Permanently delete my account</button>
+    </form>`);
+  $("#deleteAccountForm").onsubmit = async event => {
+    event.preventDefault();
+    const button = event.submitter;
+    setLoading(button,true,"Deleting...");
+    try {
+      await request("/api/account",{method:"DELETE",body:JSON.stringify({password:new FormData(event.currentTarget).get("password")})});
+      clearInterval(chatPoll);
+      state.user = null;
+      state.activeTab = "home";
+      state.activeConversation = null;
+      showAuth();
+      setAuthMode("login");
+      closeModal();
+      toast("Account deleted");
+    } catch(error) { toast(error.message); setLoading(button,false); }
+  };
 }
 
 function verificationSheet() {
@@ -482,14 +593,45 @@ async function activateHost() {
   };
 }
 
+function confirmDeleteListing(id) {
+  const item = state.ownListings.find(listing=>listing.id===id) || state.listings.find(listing=>listing.id===id);
+  if (!item) return;
+  modal(`
+    <div class="modal-head"><div><h2>Delete “${esc(item.title)}”?</h2><p>The listing disappears from Explore immediately. Existing bookings and reports stay on record.</p></div><button class="close-button">&times;</button></div>
+    <div class="detail-actions"><button class="button subtle" data-action="close-modal">Keep listing</button><button class="button danger" data-action="do-delete-listing" data-id="${id}">Delete permanently</button></div>`);
+}
+
+async function deleteListing(id) {
+  try {
+    await request(`/api/listings/${id}`,{method:"DELETE"});
+    await refreshData(false);
+    closeModal();
+    renderAll();
+    toast("Listing deleted");
+  } catch(error) { toast(error.message); }
+}
+
+async function toggleListingStatus(id) {
+  const item = state.ownListings.find(listing=>listing.id===id);
+  if (!item) return;
+  try {
+    await request(`/api/listings/${id}`,{method:"PATCH",body:JSON.stringify({status:item.status==="active"?"hidden":"active"})});
+    await refreshData(false);
+    closeModal();
+    renderAll();
+    toast(item.status==="active"?"Listing hidden from Explore":"Listing published again");
+  } catch(error) { toast(error.message); }
+}
+
 function emptyState(title, description, action = "") {
   return `<div class="empty-state glass"><div class="empty-icon">&#8962;</div><h3>${esc(title)}</h3><p>${esc(description)}</p>${action}</div>`;
 }
 
 function openListing(id) {
-  const item = state.listings.find(listing=>listing.id===id);
-  if (!item) return;
+  const item = state.listings.find(listing=>listing.id===id) || state.ownListings.find(listing=>listing.id===id);
+  if (!item) return toast("Open a property from Explore first");
   const photo = item.photos?.[0];
+  const mine = state.user && item.ownerId === state.user.id;
   modal(`
     <div class="modal-head"><div><span class="eyebrow">${item.verified?"&#10003; Verified property":"&#9676; Verification pending"}</span></div><button class="close-button">&times;</button></div>
     <div class="listing-detail">
@@ -497,15 +639,23 @@ function openListing(id) {
       <div class="detail-copy">
         <span class="eyebrow">${esc(item.type)}</span><h2>${esc(item.title)}</h2><span>&#8982; ${esc(item.area)} &middot; ${esc(item.university)}</span>
         <div class="detail-price">${money(item.price)} <small>/ academic year</small></div>
-        <p>${esc(item.description)}</p>
-        <div class="amenities">${item.amenities.map(name=>`<span class="amenity">&#10003; ${esc(name)}</span>`).join("")}</div>
+        <p>${esc(item.description || "The owner has not added a description yet.")}</p>
+        <div class="amenities">${(item.amenities||[]).map(name=>`<span class="amenity">&#10003; ${esc(name)}</span>`).join("") || `<span class="amenity">No amenities listed</span>`}</div>
+        ${mine ? `
+        <div class="detail-actions">
+          <button class="button subtle" data-action="edit-listing" data-id="${item.id}">Edit details</button>
+          <button class="button primary" data-action="toggle-listing-status" data-id="${item.id}">${item.status==="active"?"Unpublish listing":"Publish listing"}</button>
+          <button class="button danger" data-action="confirm-delete-listing" data-id="${item.id}">Delete listing</button>
+        </div>
+        <button class="report-link" data-action="open-inspections">See inspection requests</button>`
+        : `
         <div class="detail-actions">
           <a class="button subtle" href="${mapUrl(item)}" target="_blank" rel="noreferrer">View on map</a>
           <button class="button subtle" data-action="contact-landlord" data-id="${item.id}">Message</button>
           <button class="button primary" data-action="open-inspection" data-id="${item.id}">Request inspection</button>
-          <button class="button primary" data-action="start-booking" data-id="${item.id}">Book & split rent</button>
+          <button class="button primary" data-action="start-booking" data-id="${item.id}">Book &amp; split rent</button>
         </div>
-        <button class="report-link" data-action="open-report" data-id="${item.id}">Report a concern</button>
+        <button class="report-link" data-action="open-report" data-id="${item.id}">Report a concern</button>`}
       </div>
     </div>`,true);
 }
@@ -555,11 +705,14 @@ async function submitInspection(event) {
 
 function inspectionsSheet() {
   const items = state.inspections || [];
+  const hosting = state.user.role === "landlord" || inHostView();
   modal(`
-    <div class="modal-head"><div><span class="eyebrow">Inspections</span><h2>${state.user.role==="landlord"?"Tour requests":"Your requests"}</h2><p>${state.user.role==="landlord"?"Students who want to inspect one of your houses.":"Inspection requests you have sent to landlords."}</p></div><button class="close-button">&times;</button></div>
+    <div class="modal-head"><div><span class="eyebrow">Inspections</span><h2>${hosting?"Tour requests":"Your requests"}</h2><p>${hosting?"Students who want to inspect one of your houses.":"Inspection requests you have sent to landlords."}</p></div><button class="close-button">&times;</button></div>
     <div class="inspection-list">${items.length ? items.map(inspection=>{
-      const listing = state.listings.find(item=>item.id===inspection.listingId);
-      return `<div class="inspection-row"><span class="metric-icon">${icon("calendar")}</span><span><b>${esc(listing?.title || "House inspection")}</b><small>${esc(inspection.preferredDate || "Date pending")} &middot; ${esc(inspection.timeWindow)} &middot; ${esc(inspection.status)}</small></span></div>`;
+      const listing = state.listings.find(item=>item.id===inspection.listingId) || state.ownListings.find(item=>item.id===inspection.listingId);
+      const isMine = inspection.tenantId === state.user.id;
+      const other = !isMine ? state.roommateCandidates.find(item=>item.id===inspection.tenantId) : null;
+      return `<div class="inspection-row"><span class="metric-icon">${icon("calendar")}</span><span><b>${esc(listing?.title || "House inspection")}</b><small>${esc(inspection.preferredDate || "Date pending")} &middot; ${esc(inspection.timeWindow)} &middot; ${esc(inspection.status)}${other ? ` · ${esc(other.name)}` : ""}</small></span></div>`;
     }).join("") : `<div class="empty-state"><div class="empty-icon">${icon("calendar")}</div><h3>No inspection requests yet</h3><p>Requests will appear here after a tenant chooses a viewing window.</p></div>`}</div>`);
 }
 
@@ -646,7 +799,7 @@ function startBooking(id) {
     <div class="modal-head"><div><h2>Secure your space</h2><p>Review the booking before continuing to payment.</p></div><button class="close-button">&times;</button></div>
     <div class="checkout-card"><div class="checkout-thumb"></div><div><b>${esc(item.title)}</b><span>${esc(item.area)} &middot; ${esc(item.university)}</span><span style="color:var(--green);font-weight:800">&#10003; Property and owner reviewed</span></div></div>
     <div class="cost-row"><span>Annual rent</span><b>${money(item.price)}</b></div>
-    <fieldset class="segmented split-segment"><legend>How would you like to pay?</legend><label><input type="radio" name="splitCount" value="1" checked><span>Pay alone</span></label><label><input type="radio" name="splitCount" value="2"><span>Split 2 ways</span></label><label><input type="radio" name="splitCount" value="3"><span>Split 3 ways</span></label></fieldset>
+    <fieldset class="segmented split-segment"><legend>How would you like to pay?</legend><label><input type="radio" name="splitCount" value="1" checked><span>Pay alone</span></label><label><input type="radio" name="splitCount" value="2"><span>Split 2 ways</span></label><label><input type="radio" name="splitCount" value="3"><span>Split 3 ways</span></label><label><input type="radio" name="splitCount" value="4"><span>Split 4 ways</span></label></fieldset>
     <div class="cost-row"><span>Offkay fee</span><b>&#8358;0 launch offer</b></div>
     <div class="cost-row"><span>Payment protection</span><b>Included</b></div>
     <div class="cost-row total"><span>Total</span><span>${money(item.price)}</span></div>
@@ -668,7 +821,7 @@ function showPayment(booking) {
   modal(`
     <div class="modal-head"><div><h2>Test payment</h2><p>Use this step to validate the complete booking journey.</p></div><button class="close-button">&times;</button></div>
     <div class="checkout-card"><div class="checkout-thumb"></div><div><b>Booking ${esc(booking.id.slice(-8).toUpperCase())}</b><span>Amount due now</span></div></div>
-    <div class="cost-row"><span>${booking.splitCount > 1 ? `Your share (${booking.splitCount} people)` : "Your payment"}</span><b>${money(booking.amount / booking.splitCount)}</b></div>
+    <div class="cost-row"><span>${booking.splitCount > 1 ? `Your share (${booking.splitCount} people)` : "Your payment"}</span><b>${money(booking.paymentShare || Math.round(booking.amount/booking.splitCount))}</b></div>
     <div class="cost-row total"><span>Booking total</span><span>${money(booking.amount)}</span></div>
     <div class="payment-note">No bank card will be charged in MVP mode. Clicking below records a successful test transaction and unlocks the post-payment booking state.</div>
     <button class="button primary wide" id="confirmPayment">Confirm test payment &rarr;</button>`);
@@ -758,7 +911,10 @@ function bindEvents() {
     if (action==="view-listing") openListing(id);
     if (action==="save-listing") saveListingToggle(id);
     if (action==="new-listing") listingForm();
-    if (action==="edit-listing") listingForm(state.listings.find(item=>item.id===id));
+    if (action==="edit-listing") listingForm(state.ownListings.find(item=>item.id===id) || state.listings.find(item=>item.id===id));
+    if (action==="confirm-delete-listing") confirmDeleteListing(id);
+    if (action==="do-delete-listing") deleteListing(id);
+    if (action==="toggle-listing-status") toggleListingStatus(id);
     if (action==="contact-landlord") contactLandlord(id);
     if (action==="start-booking") startBooking(id);
     if (action==="open-inspection") inspectionSheet(id);
@@ -772,6 +928,10 @@ function bindEvents() {
     if (action==="open-settings") settingsSheet();
     if (action==="open-verification") verificationSheet();
     if (action==="activate-host") activateHost();
+    if (action==="confirm-logout") confirmLogout();
+    if (action==="do-logout") doLogout();
+    if (action==="confirm-delete-account") confirmDeleteAccount();
+    if (action==="resume-payment") resumePayment(id);
     if (action==="switch-view") {
       state.hostView = !state.hostView;
       localStorage.setItem("offkay-host-view", String(state.hostView));
@@ -785,14 +945,15 @@ function bindEvents() {
     if (action==="reset-home-filters") {state.filters.homes={query:"",university:"",type:"All",maxPrice:"",bedrooms:"",verified:false};renderExplore();}
     if (action==="reset-roommate-filters") {state.filters.roommates={query:"",university:"",maxBudget:"",habit:"",verified:false};renderExplore();}
     if (action==="open-conversation") {state.activeConversation=id;renderMessages();}
-    if (action==="back-to-conversations") {state.activeConversation=null;renderMessages();}
+    if (action==="back-to-conversations") {state.activeConversation=null;setChatPolling(null);renderMessages();}
     if (action==="toggle-habit") actionNode.classList.toggle("selected");
   });
 
+  $("#notificationButton").addEventListener("click", () => { if (state.user) switchTab("messages"); });
   $("#modalRoot").addEventListener("click", event => { if(event.target===$("#modalRoot")) closeModal(); });
   $("#loginForm").addEventListener("submit", login);
   $("#signupForm").addEventListener("submit", signup);
-  $("#logoutButton").addEventListener("click", logout);
+  $("#logoutButton").addEventListener("click", confirmLogout);
   $("#globalSearch").addEventListener("keydown", event => {
     if (event.key === "Enter") {
       state.filters.homes.query=event.currentTarget.value;state.exploreMode="homes";switchTab("explore");renderExplore();
@@ -853,15 +1014,17 @@ async function signup(event) {
     const values=Object.fromEntries(new FormData(event.currentTarget));
     const data=await request("/api/auth/signup",{method:"POST",body:JSON.stringify(values)});
     state.user=data.user;await refreshData(false);enterApp();toast("Your Offkay account is ready");
-  } catch(error){toast(error.message)}
-  finally{setLoading(button,false)}
-}
-
-async function logout() {
-  try { await request("/api/auth/logout",{method:"POST"}); }
-  finally {
-    state.user=null;state.activeTab="home";state.activeConversation=null;showAuth();setAuthMode("login");toast("Signed out");
+  } catch(error){
+    if (error.message.includes("already exists")) {
+      setAuthMode("login");
+      const savedEmail = $("#signupForm [name=email]")?.value || "";
+      if (savedEmail) $("#loginForm [name=email]").value = savedEmail;
+      toast("That email is registered. Sign in instead - details pre-filled.");
+    } else {
+      toast(error.message);
+    }
   }
+  finally{setLoading(button,false)}
 }
 
 bindEvents();

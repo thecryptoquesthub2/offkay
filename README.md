@@ -21,6 +21,14 @@ Open `http://127.0.0.1:4173` on the computer.
 
 For mobile access, connect the phone and computer to the same Wi-Fi network, then open `http://YOUR-COMPUTER-IP:4173` on the phone. The server listens on the local network by default.
 
+## Tests
+
+The API is covered by an end-to-end smoke test that boots a disposable server on port 4599 with an isolated temp database:
+
+```powershell
+npm test
+```
+
 ## Demo accounts
 
 - Tenant: `tenant@demo.test` / `demo1234`

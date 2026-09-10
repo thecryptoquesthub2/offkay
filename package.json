@@ -5,7 +5,8 @@
   "description": "Offkay student housing and roommate matching MVP",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js"
+    "check": "node --check server.js && node --check public/app.js && node --check scripts/smoke-test.js",
+    "test": "node scripts/smoke-test.js"
   },
   "engines": {
     "node": ">=20"
