@@ -34,11 +34,15 @@ const canHost = () => state.user?.role === "landlord" || state.user?.hosting ===
 const inHostView = () => canHost() && state.hostView;
 const unreadTotal = () => state.conversations.reduce((sum,item)=>sum+(Number(item.unread)||0),0);
 
+const KNOWN_THEMES = ["offkay","forest","slate","clay","midnight"];
+
 function applyTheme(theme) {
+  if (!KNOWN_THEMES.includes(theme)) theme = "offkay";
   state.theme = theme;
   document.body.dataset.theme = theme;
   localStorage.setItem("offkay-theme", theme);
 }
+document.body.dataset.theme = KNOWN_THEMES.includes(state.theme) ? state.theme : "offkay";
 
 async function request(url, options = {}) {
   const response = await fetch(url, {
@@ -100,8 +104,16 @@ async function bootstrap() {
     Object.assign(state, data);
     applyTheme(state.theme);
     populateUniversities();
-    if (state.user) enterApp(); else showAuth();
+    if (state.user) {
+      try { enterApp(); } catch (renderError) {
+        console.error("App shell render failed, retrying with guest view:", renderError);
+        state.hostView = false;
+        localStorage.setItem("offkay-host-view", "false");
+        enterApp();
+      }
+    } else showAuth();
   } catch (error) {
+    console.error("Bootstrap failed:", error);
     showAuth();
     toast(error.message);
   }
@@ -987,7 +999,7 @@ function bindEvents() {
     if(filter==="roommate-query") state.filters.roommates.query=event.target.value;
     if(event.target.id==="conversationSearch"){
       const query=event.target.value.toLowerCase();
-      $("#conversationRows").innerHTML=state.conversations.filter(item=>item.other?.name.toLowerCase().includes(query)).map(conversationRow).join("");
+      $("#conversationRows").innerHTML=state.conversations.filter(item=>(item.other?.name || "").toLowerCase().includes(query)).map(conversationRow).join("");
     }
   });
   document.addEventListener("change",event=>{

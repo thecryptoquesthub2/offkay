@@ -226,6 +226,12 @@ function json(res, status, payload, headers = {}) {
   res.end(JSON.stringify(payload));
 }
 
+function sessionCookie(req, token, maxAge) {
+  const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const secure = proto === "https" ? "; Secure" : "";
+  return `ch_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
 function error(res, status, message) {
   return json(res, status, { error: message });
 }
@@ -386,7 +392,7 @@ async function api(req, res, url) {
     db.sessions.push({token,userId:newUser.id,expiresAt:Date.now()+SESSION_TTL});
     await new Promise(resolve => setTimeout(resolve, 0));
     await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
-    return json(res, 201, {user:publicUser(newUser)}, {"Set-Cookie":`ch_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`});
+    return json(res, 201, {user:publicUser(newUser)}, {"Set-Cookie":sessionCookie(req, token, 2592000)});
   }
 
   if (route === "/api/auth/login" && method === "POST") {
@@ -396,21 +402,21 @@ async function api(req, res, url) {
     const token = id("ses");
     db.sessions.push({token,userId:account.id,expiresAt:Date.now()+SESSION_TTL});
     await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
-    return json(res, 200, {user:publicUser(account)}, {"Set-Cookie":`ch_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`});
+    return json(res, 200, {user:publicUser(account)}, {"Set-Cookie":sessionCookie(req, token, 2592000)});
   }
 
   if (route === "/api/auth/logout" && method === "POST") {
     const token = parseCookies(req).ch_session;
     db.sessions = db.sessions.filter(item => item.token !== token);
     await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
-    return json(res, 200, {ok:true}, {"Set-Cookie":"ch_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"});
+    return json(res, 200, {ok:true}, {"Set-Cookie":sessionCookie(req, "", 0)});
   }
 
   if (route === "/api/auth/logout-all" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
     db.sessions = db.sessions.filter(item => item.userId !== account.id);
     await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
-    return json(res, 200, {ok:true}, {"Set-Cookie":"ch_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"});
+    return json(res, 200, {ok:true}, {"Set-Cookie":sessionCookie(req, "", 0)});
   }
 
   if (route === "/api/account" && method === "DELETE") {
@@ -421,7 +427,7 @@ async function api(req, res, url) {
     }
     removeUserFromDb(db, account.id);
     await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
-    return json(res, 200, {ok:true}, {"Set-Cookie":"ch_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"});
+    return json(res, 200, {ok:true}, {"Set-Cookie":sessionCookie(req, "", 0)});
   }
 
   if (route === "/api/profile" && method === "PATCH") {
