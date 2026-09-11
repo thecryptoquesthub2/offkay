@@ -16,6 +16,23 @@ const LISTING_TYPES = ["Studio", "Shared", "En-suite", "Self-contained", "Apartm
 const LISTING_STATUSES = ["active", "hidden"];
 const EPOCH = "1970-01-01T00:00:00.000Z";
 
+function loadDotEnvFile(file) {
+  try {
+    const text = fs.readFileSync(file, "utf8");
+    for (const line of text.split("\n")) {
+      const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      if (!match) continue;
+      let value = match[2].trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
+      if (!(match[1] in process.env)) process.env[match[1]] = value;
+    }
+  } catch {}
+}
+loadDotEnvFile(path.join(__dirname, ".env.local"));
+
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || "";
+const PAYSTACK_BASE = "https://api.paystack.co";
+
 const universities = [
   "University of Lagos","University of Ibadan","University of Nigeria, Nsukka","Obafemi Awolowo University",
   "Ahmadu Bello University","University of Benin","University of Ilorin","University of Abuja",
@@ -281,6 +298,35 @@ function removeUserFromDb(db, userId) {
   db.messages = db.messages.filter(message => !removedConversations.has(message.conversationId));
 }
 
+function requestUrl(req) {
+  const forwardedHost = req.headers["x-forwarded-host"];
+  const host = forwardedHost || req.headers.host;
+  if (!host) return null;
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const hostText = String(host);
+  const local = hostText.startsWith("localhost") || hostText.startsWith("127.0.0.1");
+  const proto = forwardedProto || (local ? "http" : "https");
+  return `${proto}://${hostText}`;
+}
+
+async function paystackFetch(pathname, options = {}) {
+  const response = await fetch(`${PAYSTACK_BASE}${pathname}`, {
+    ...options,
+    headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`, "Content-Type": "application/json", ...(options.headers || {}) }
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { status: response.status, payload };
+}
+
+function paystackWebhookSignatureValid(req, rawBody) {
+  const header = String(req.headers["x-paystack-signature"] || "");
+  if (!header || !PAYSTACK_SECRET_KEY) return false;
+  const expected = crypto.createHmac("sha512", PAYSTACK_SECRET_KEY).update(rawBody).digest("hex");
+  const a = Buffer.from(header, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 async function api(req, res, url) {
   const db = readDb();
   const user = currentUser(req, db);
@@ -314,7 +360,8 @@ async function api(req, res, url) {
     return json(res, 200, {
       user: publicUser(user),
       universities: [...new Set(universities)].sort((a,b)=>a.localeCompare(b)),
-      listings, ownListings, conversations, bookings, inspections, roommateCandidates, verification
+      listings, ownListings, conversations, bookings, inspections, roommateCandidates, verification,
+      paymentsEnabled: Boolean(PAYSTACK_SECRET_KEY)
     });
   }
 
@@ -625,11 +672,92 @@ async function api(req, res, url) {
     const booking = db.bookings.find(item => item.id === payMatch[1] && item.tenantId === account.id);
     if (!booking) return error(res,404,"Booking not found");
     if (booking.status === "paid") return json(res,200,{booking});
+    if (PAYSTACK_SECRET_KEY) return error(res,403,"Real payments are enabled - complete checkout on Paystack instead");
     booking.status = "paid";
     booking.paidAt = new Date().toISOString();
     booking.reference = `HH-${Date.now()}`;
     await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return json(res,200,{booking});
+  }
+
+  const initMatch = route.match(/^\/api\/bookings\/([^/]+)\/pay\/initialize$/);
+  if (initMatch && method === "POST") {
+    const account = requireUser(req,res,db); if (!account) return;
+    if (!PAYSTACK_SECRET_KEY) return error(res, 503, "Payments are not configured on this server yet");
+    const booking = db.bookings.find(item => item.id === initMatch[1] && item.tenantId === account.id);
+    if (!booking) return error(res, 404, "Booking not found");
+    if (booking.status === "paid") return error(res, 409, "This booking is already paid");
+    const origin = requestUrl(req);
+    if (!origin) return error(res, 400, "Cannot determine the request origin");
+    const reference = `OFFKAY-${booking.id}-${Date.now()}`;
+    const { status, payload } = await paystackFetch("/transaction/initialize", {
+      method: "POST",
+      body: JSON.stringify({
+        email: account.email,
+        amount: booking.amount * 100,
+        reference,
+        currency: "NGN",
+        callback_url: `${origin}/payment-callback.html`,
+        metadata: { bookingId: booking.id, userId: account.id, splitCount: booking.splitCount }
+      })
+    });
+    if (!status || !payload?.status || !payload?.data?.authorization_url) {
+      console.error("Paystack initialize failed:", payload?.message || payload);
+      return error(res, 502, payload?.message || "Paystack rejected the payment request");
+    }
+    booking.paymentReference = reference;
+    booking.paymentStatus = "initializing";
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    return json(res, 200, { authorizationUrl: payload.data.authorization_url, reference });
+  }
+
+  const verifyMatch = route.match(/^\/api\/bookings\/([^/]+)\/pay\/verify$/);
+  if (verifyMatch && method === "POST") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const booking = db.bookings.find(item => item.id === verifyMatch[1] && item.tenantId === account.id);
+    if (!booking) return error(res, 404, "Booking not found");
+    if (booking.status === "paid") return json(res, 200, { booking, alreadyPaid: true });
+    if (!booking.paymentReference) return error(res, 400, "No payment was started for this booking");
+    const { status, payload } = await paystackFetch(`/transaction/verify/${encodeURIComponent(booking.paymentReference)}`);
+    const transaction = payload?.data;
+    const paid = Boolean(status && payload?.status && transaction?.status === "success");
+    if (paid && transaction.amount !== booking.amount * 100) {
+      console.error("Paystack amount mismatch:", transaction.amount, "expected", booking.amount * 100);
+      return error(res, 400, "Payment amount does not match this booking");
+    }
+    if (!paid) {
+      booking.paymentStatus = transaction?.status || "pending";
+      await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+      return error(res, 402, "Payment is not complete yet. If you just paid, give it a moment and try again.");
+    }
+    booking.status = "paid";
+    booking.paidAt = new Date(transaction.paid_at || Date.now()).toISOString();
+    booking.reference = booking.paymentReference;
+    booking.paystackTransactionId = transaction.id;
+    booking.paymentStatus = "success";
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    return json(res, 200, { booking });
+  }
+
+  if (route === "/api/payments/webhook" && method === "POST") {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const rawBody = Buffer.concat(chunks);
+    if (!paystackWebhookSignatureValid(req, rawBody)) return error(res, 401, "Invalid webhook signature");
+    let event = null;
+    try { event = JSON.parse(rawBody.toString("utf8")); } catch {}
+    if (event?.event === "charge.success" && event?.data?.reference) {
+      const booking = db.bookings.find(item => item.paymentReference === event.data.reference);
+      if (booking && booking.status !== "paid" && event.data.amount === booking.amount * 100) {
+        booking.status = "paid";
+        booking.paidAt = new Date(event.data.paid_at || Date.now()).toISOString();
+        booking.reference = event.data.reference;
+        booking.paystackTransactionId = event.data.id;
+        booking.paymentStatus = "success";
+        await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+      }
+    }
+    return json(res, 200, { received: true });
   }
 
   return error(res,404,"API route not found");

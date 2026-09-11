@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Verifying payment · Offkay</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main class="callback-shell">
+    <div class="callback-card glass">
+      <div class="callback-icon" id="callbackIcon">&#8987;</div>
+      <h1 id="callbackTitle">Verifying your payment…</h1>
+      <p id="callbackBody">We're confirming this transaction with Paystack. This only takes a moment.</p>
+      <div class="callback-actions" id="callbackActions" hidden>
+        <a class="button primary wide" href="/">Back to Offkay</a>
+      </div>
+    </div>
+  </main>
+  <script>
+    (async () => {
+      const icon = document.getElementById("callbackIcon");
+      const title = document.getElementById("callbackTitle");
+      const body = document.getElementById("callbackBody");
+      const actions = document.getElementById("callbackActions");
+      const params = new URLSearchParams(window.location.search);
+      const reference = params.get("reference") || params.get("trxref");
+      const bookingMatch = reference ? reference.match(/^OFFKAY-(bkg_[^-]+)-/) : null;
+      const finish = (state, heading, text) => {
+        icon.innerHTML = state === "success" ? "&#10003;" : state === "pending" ? "&#8987;" : "&#10007;";
+        if (state === "success") icon.classList.add("ok");
+        if (state === "error") icon.classList.add("bad");
+        title.textContent = heading;
+        body.textContent = text;
+        actions.hidden = false;
+      };
+      if (!bookingMatch) {
+        return finish("error", "We couldn't identify this payment", "The payment reference is missing or invalid. Check your bookings in Profile — if you were charged, verification may still land within a minute.");
+      }
+      const bookingId = bookingMatch[1];
+      for (let attempt = 0; attempt < 8; attempt++) {
+        try {
+          const response = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/pay/verify`, { method: "POST", credentials: "same-origin" });
+          const payload = await response.json().catch(() => ({}));
+          if (response.ok) {
+            return finish("success", "Payment confirmed", `Your booking is active. Reference: ${payload.booking.reference || reference}. The landlord can see the confirmed booking in Messages.`);
+          }
+          if (response.status === 401) {
+            return finish("error", "Session expired", "Sign in again, then open Profile to resume this payment — your booking is saved.");
+          }
+          if (attempt === 7) {
+            return finish("pending", "Almost there", payload.error || "The payment hasn't been confirmed yet. Give it a moment, then check your bookings in Profile.");
+          }
+        } catch {
+          if (attempt === 7) return finish("pending", "Network hiccup", "We couldn't reach the server. Check your connection and check your bookings in Profile in a moment.");
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+    })();
+  </script>
+</body>
+</html>

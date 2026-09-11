@@ -72,7 +72,7 @@ async function waitForServer(proc) {
 function bootServer() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "offkay-test-"));
   const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp },
+    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "" },
     stdio: ["ignore", "inherit", "inherit"]
   });
   return { proc, tmp };
@@ -91,6 +91,7 @@ async function run() {
       const res = await call(null, "GET", "/api/bootstrap");
       check("bootstrap returns 200", res.status === 200);
       check("bootstrap exposes universities", Array.isArray(res.payload.universities) && res.payload.universities.length > 10);
+      check("bootstrap reports payments disabled without key", res.payload.paymentsEnabled === false);
       check("bootstrap lists only active listings", Array.isArray(res.payload.listings) && res.payload.listings.every(l => l.status === "active"));
       check("anonymous user is null", res.payload.user === null);
     }
@@ -222,10 +223,69 @@ async function run() {
     const landlordBooking = await call(landlord, "POST", "/api/bookings", { listingId });
     check("landlord cannot book (403)", landlordBooking.status === 403);
 
+    const initNoKey = await call(tenant, "POST", `/api/bookings/${booking.payload.booking.id}/pay/initialize`);
+    check("paystack initialize refused without key (503)", initNoKey.status === 503);
+
     const pay = await call(tenant, "POST", `/api/bookings/${booking.payload.booking.id}/confirm-payment`);
     check("tenant confirms payment", pay.status === 200 && pay.payload.booking.status === "paid" && pay.payload.booking.reference);
     const rePay = await call(tenant, "POST", `/api/bookings/${booking.payload.booking.id}/confirm-payment`);
     check("re-confirm is idempotent", rePay.status === 200 && rePay.payload.booking.reference === pay.payload.booking.reference);
+
+    const initWhenPaid = await call(tenant, "POST", `/api/bookings/${booking.payload.booking.id}/pay/initialize`);
+    check("paystack initialize stays unavailable without key (503)", initWhenPaid.status === 503);
+
+    const unsignedWebhook = await fetch(`${URL_BASE}/api/payments/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: "charge.success", data: { reference: "OFFKAY-fake", amount: 100 } }) });
+    check("webhook rejects unsigned payload (401)", unsignedWebhook.status === 401);
+
+    console.log("== payments with key configured ==");
+    {
+      const keyedPort = PORT + 2;
+      const keyedTmp = fs.mkdtempSync(path.join(os.tmpdir(), "offkay-keyed-"));
+      const keyedProc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
+        env: { ...process.env, PORT: String(keyedPort), HOST: "127.0.0.1", OFFKAY_DATA_DIR: keyedTmp, PAYSTACK_SECRET_KEY: "sk_test_smoke_fake_key" },
+        stdio: ["ignore", "ignore", "ignore"]
+      });
+      try {
+        let ready = false;
+        for (let i = 0; i < 50 && !ready; i++) {
+          try { ready = (await fetch(`http://127.0.0.1:${keyedPort}/api/bootstrap`)).ok; } catch {}
+          if (!ready) await new Promise(r => setTimeout(r, 100));
+        }
+        check("keyed server became ready", ready);
+        if (ready) {
+          const keyedBase = `http://127.0.0.1:${keyedPort}`;
+          const keyedCall = async (j, method, urlPath, body) => {
+            const res = await fetch(`${keyedBase}${urlPath}`, {
+              method,
+              headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(j ? { Cookie: j.header() } : {}) },
+              body: body ? JSON.stringify(body) : undefined
+            });
+            if (j) j.absorb(res);
+            return { status: res.status, payload: await res.json().catch(() => ({})) };
+          };
+          const keyedTenant = jar();
+          await keyedCall(keyedTenant, "POST", "/api/auth/login", { email: "tenant@demo.test", password: "demo1234" });
+          const keyedBootstrap = await keyedCall(keyedTenant, "GET", "/api/bootstrap");
+          check("bootstrap reports payments enabled with key", keyedBootstrap.payload.paymentsEnabled === true);
+          const keyedListing = keyedBootstrap.payload.listings[0];
+          const keyedBooking = await keyedCall(keyedTenant, "POST", "/api/bookings", { listingId: keyedListing.id, splitCount: 2 });
+          check("keyed server accepts booking", keyedBooking.status === 201);
+          const keyedConfirm = await keyedCall(keyedTenant, "POST", `/api/bookings/${keyedBooking.payload.booking.id}/confirm-payment`);
+          check("test confirm-payment blocked when paystack enabled (403)", keyedConfirm.status === 403);
+          const keyedInit = await keyedCall(keyedTenant, "POST", `/api/bookings/${keyedBooking.payload.booking.id}/pay/initialize`);
+          check("initialize with fake key reaches Paystack or fails safely (500/502)", [500, 502].includes(keyedInit.status));
+          const signedBody = JSON.stringify({ event: "charge.success", data: { reference: "OFFKAY-unknown-123", amount: 100, id: 1 } });
+          const crypto = require("node:crypto");
+          const signature = crypto.createHmac("sha512", "sk_test_smoke_fake_key").update(signedBody).digest("hex");
+          const signedWebhook = await fetch(`${keyedBase}/api/payments/webhook`, { method: "POST", headers: { "Content-Type": "application/json", "x-paystack-signature": signature }, body: signedBody });
+          const webhookPayload = await signedWebhook.json().catch(() => ({}));
+          check("webhook accepts validly signed payload (200)", signedWebhook.status === 200 && webhookPayload.received === true);
+        }
+      } finally {
+        keyedProc.kill("SIGKILL");
+        fs.rmSync(keyedTmp, { recursive: true, force: true });
+      }
+    }
 
     console.log("== account management ==");
     const wrongDelete = await call(tenant, "DELETE", "/api/account", { password:"not-the-password" });

@@ -5,6 +5,7 @@
   ownListings: [],
   roommateCandidates: [],
   verification: null,
+  paymentsEnabled: false,
   conversations: [],
   bookings: [],
   inspections: [],
@@ -803,8 +804,8 @@ function startBooking(id) {
     <div class="cost-row"><span>Offkay fee</span><b>&#8358;0 launch offer</b></div>
     <div class="cost-row"><span>Payment protection</span><b>Included</b></div>
     <div class="cost-row total"><span>Total</span><span>${money(item.price)}</span></div>
-    <div class="payment-note">This MVP uses a test confirmation flow. Live collection requires a Paystack merchant key and server-side transaction verification before launch.</div>
-    <button class="button primary wide" id="createBooking" data-id="${item.id}">Continue to secure payment &rarr;</button>`);
+    <div class="payment-note">You'll complete checkout on Paystack's secure page and return here for automatic verification. Your booking activates only after the payment is confirmed server-side.</div>
+    <button class="button primary wide" id="createBooking" data-id="${item.id}">Continue to secure payment &rarr;</button>`, state.paymentsEnabled);
   $("#createBooking").onclick = createBooking;
 }
 
@@ -813,17 +814,34 @@ async function createBooking(event) {
   try {
     const splitCount = Number(document.querySelector("input[name=splitCount]:checked")?.value || 1);
     const data = await request("/api/bookings",{method:"POST",body:JSON.stringify({listingId:button.dataset.id,splitCount})});
-    showPayment(data.booking);
+    payBooking(data.booking, button);
   } catch(error) { toast(error.message); setLoading(button,false); }
+}
+
+function payBooking(booking, button) {
+  if (button) setLoading(button,true,"Opening secure checkout...");
+  if (state.paymentsEnabled) {
+    request(`/api/bookings/${booking.id}/pay/initialize`,{method:"POST"})
+      .then(data => { window.location.href = data.authorizationUrl; })
+      .catch(error => { toast(error.message); if (button) setLoading(button,false); });
+    return;
+  }
+  showPayment(booking);
+}
+
+function resumePayment(id) {
+  const booking = state.bookings.find(item => item.id === id);
+  if (!booking) return toast("Booking not found");
+  payBooking(booking);
 }
 
 function showPayment(booking) {
   modal(`
-    <div class="modal-head"><div><h2>Test payment</h2><p>Use this step to validate the complete booking journey.</p></div><button class="close-button">&times;</button></div>
+    <div class="modal-head"><div><h2>Test payment</h2><p>This preview server has no Paystack key configured, so booking confirmation runs in demo mode.</p></div><button class="close-button">&times;</button></div>
     <div class="checkout-card"><div class="checkout-thumb"></div><div><b>Booking ${esc(booking.id.slice(-8).toUpperCase())}</b><span>Amount due now</span></div></div>
     <div class="cost-row"><span>${booking.splitCount > 1 ? `Your share (${booking.splitCount} people)` : "Your payment"}</span><b>${money(booking.paymentShare || Math.round(booking.amount/booking.splitCount))}</b></div>
     <div class="cost-row total"><span>Booking total</span><span>${money(booking.amount)}</span></div>
-    <div class="payment-note">No bank card will be charged in MVP mode. Clicking below records a successful test transaction and unlocks the post-payment booking state.</div>
+    <div class="payment-note">No bank card is charged in this mode. With a live Paystack key, this button takes you to a secure Paystack checkout and the booking only activates after server-side verification.</div>
     <button class="button primary wide" id="confirmPayment">Confirm test payment &rarr;</button>`);
   $("#confirmPayment").onclick = async event => {
     setLoading(event.currentTarget,true,"Verifying payment...");

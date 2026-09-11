@@ -7,7 +7,7 @@ A working student-housing MVP with a direct account gate and four app tabs:
 - Messages
 - Profile
 
-It includes tenant and landlord roles, sign-up/sign-in, landlord-only property publishing with photo uploads, university filtering, approximate map mode, saved homes, roommate matching, messaging, inspection requests, private safety reports, split-payment booking, curated themes, and a test-payment confirmation state.
+It includes tenant and landlord roles, sign-up/sign-in, landlord-only property publishing with photo uploads, university filtering, approximate map mode, saved homes, roommate matching, messaging, inspection requests, private safety reports, split-payment booking, curated themes, and Paystack checkout payments with server-side verification (a demo confirmation flow runs when no Paystack key is configured).
 
 ## Run locally
 
@@ -36,7 +36,11 @@ npm test
 
 ## Launch boundary
 
-The data store is a local JSON file for immediate MVP operation. Before public deployment, move users, listings, conversations, and bookings to a managed database, and connect the existing payment-confirmation boundary to Paystack (initialize plus server-side verification) using your merchant credentials.
+The data store is a local JSON file for immediate MVP operation. Before public deployment, move users, listings, conversations, and bookings to a managed database.
+
+## Payments
+
+Payments run through Paystack checkout. Set `PAYSTACK_SECRET_KEY` in the environment to enable it; without a key the app falls back to a clearly-labeled demo confirmation flow. The flow is: create booking → initialize transaction server-side → Paystack hosted checkout → `/payment-callback.html` verifies the transaction server-side (amount-checked) → booking marked paid. A signed webhook (`POST /api/payments/webhook`) is also supported — point it at `https://your-domain/api/payments/webhook` in the Paystack dashboard as a backup confirmation path.
 
 ## Vercel preview
 
