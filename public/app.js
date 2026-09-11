@@ -53,7 +53,69 @@ function applyTheme(theme) {
 }
 document.body.dataset.theme = KNOWN_THEMES.includes(state.theme) ? state.theme : "offkay";
 
-const isDbDown = error => /database connection failed|waking up/i.test(String(error?.message || ""));
+const isDbDown = error => /database connection failed|waking up|cannot be saved/i.test(String(error?.message || ""));
+
+/* ---- Verification state helpers ------------------------------------------
+   State-driven: NOT_VERIFIED (nothing submitted), PENDING (under review),
+   VERIFIED (approved — final), REJECTED (rejected, may resubmit). */
+function verificationState() {
+  return state.verificationStatus || state.verification?.statusLabel || "NOT_VERIFIED";
+}
+
+function verificationStatusLabel() {
+  const status = verificationState();
+  if (status === "VERIFIED") return "Identity verified";
+  if (status === "PENDING") return "Verification under review";
+  if (status === "REJECTED") {
+    return state.verification?.rejectionReason
+      ? `Resubmit required — ${state.verification.rejectionReason}`
+      : "Rejected — submit clearer documents to try again";
+  }
+  return "Not submitted";
+}
+
+function verificationBadge(statusLabel, submission) {
+  if (statusLabel === "VERIFIED") {
+    return `<span class="verified-line">&#10003; Identity verified</span>`;
+  }
+  if (statusLabel === "PENDING") {
+    return `<span class="verified-line pending">&#8987; Verification under review</span>`;
+  }
+  if (statusLabel === "REJECTED") {
+    const reason = submission?.rejectionReason;
+    return `<span class="verified-line rejected">&#10007; Verification rejected</span>${reason ? `<small class="verify-reason">Reason: ${esc(reason)}</small>` : ""}`;
+  }
+  return `<span class="verified-line">&#9676; Not verified yet</span>`;
+}
+
+function verificationPanel(statusLabel, submission) {
+  if (statusLabel === "VERIFIED") {
+    return `<div class="verify-panel verified glass">
+      <div>${icon("verified")}<b>You're verified</b></div>
+      <p>Your identity documents were reviewed and approved${submission?.reviewedAt ? ` on ${new Date(submission.reviewedAt).toLocaleDateString()}` : ""}. Verification is complete — no further action is needed.</p>
+    </div>`;
+  }
+  if (statusLabel === "PENDING") {
+    const submitted = submission?.createdAt ? new Date(submission.createdAt).toLocaleDateString() : null;
+    return `<div class="verify-panel pending glass">
+      <div>&#8987; <b>Verification under review</b></div>
+      <p>We received your documents${submitted ? ` on ${submitted}` : ""}. The Offkay team reviews submissions manually — usually within 24 hours. You'll see the result here.</p>
+    </div>`;
+  }
+  if (statusLabel === "REJECTED") {
+    return `<div class="verify-panel rejected glass">
+      <div>&#10007; <b>Verification rejected</b></div>
+      ${submission?.rejectionReason ? `<p>Reason: ${esc(submission.rejectionReason)}</p>` : ""}
+      <p>Check the reason above, prepare clearer documents, and submit again below.</p>
+      <button class="button primary" data-action="open-verification">Resubmit verification</button>
+    </div>`;
+  }
+  return `<div class="verify-panel glass">
+    <div>&#9676; <b>Verify your identity</b></div>
+    <p>Verified students get more roommate matches, and verified hosts get more bookings. It takes about two minutes.</p>
+    <button class="button primary" data-action="open-verification">Start verification</button>
+  </div>`;
+}
 const dbDownMessage = () => "Offkay can't reach its database right now - it usually reconnects within a minute. Refresh in a moment.";
 
 async function request(url, options = {}) {
@@ -1586,7 +1648,9 @@ async function signup(event) {
       if (savedEmail) $("#loginForm [name=email]").value = savedEmail;
       toast("That email is registered. Sign in instead - details pre-filled.");
     } else {
-      toast(isDbDown(error) ? dbDownMessage() : error.message);
+      // Storage failures get the server's actionable message verbatim (missing
+      // MONGODB_URI etc.); only transient connection blips get the generic toast.
+      toast(/cannot be saved/i.test(error.message) ? error.message : (isDbDown(error) ? dbDownMessage() : error.message));
     }
   }
   finally{setLoading(button,false)}
