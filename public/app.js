@@ -51,6 +51,68 @@ function applyTheme(theme) {
 document.body.dataset.theme = KNOWN_THEMES.includes(state.theme) ? state.theme : "offkay";
 
 const isDbDown = error => /database connection failed|waking up/i.test(String(error?.message || ""));
+
+/* ---- Verification state helpers ------------------------------------------
+   State-driven: NOT_VERIFIED (nothing submitted), PENDING (under review),
+   VERIFIED (approved — final), REJECTED (rejected, may resubmit). */
+function verificationState() {
+  return state.verificationStatus || state.verification?.statusLabel || "NOT_VERIFIED";
+}
+
+function verificationStatusLabel() {
+  const status = verificationState();
+  if (status === "VERIFIED") return "Identity verified";
+  if (status === "PENDING") return "Verification under review";
+  if (status === "REJECTED") {
+    return state.verification?.rejectionReason
+      ? `Resubmit required — ${state.verification.rejectionReason}`
+      : "Rejected — submit clearer documents to try again";
+  }
+  return "Not submitted";
+}
+
+function verificationBadge(statusLabel, submission) {
+  if (statusLabel === "VERIFIED") {
+    return `<span class="verified-line">&#10003; Identity verified</span>`;
+  }
+  if (statusLabel === "PENDING") {
+    return `<span class="verified-line pending">&#8987; Verification under review</span>`;
+  }
+  if (statusLabel === "REJECTED") {
+    const reason = submission?.rejectionReason;
+    return `<span class="verified-line rejected">&#10007; Verification rejected</span>${reason ? `<small class="verify-reason">Reason: ${esc(reason)}</small>` : ""}`;
+  }
+  return `<span class="verified-line">&#9676; Not verified yet</span>`;
+}
+
+function verificationPanel(statusLabel, submission) {
+  if (statusLabel === "VERIFIED") {
+    return `<div class="verify-panel verified glass">
+      <div>${icon("verified")}<b>You're verified</b></div>
+      <p>Your identity documents were reviewed and approved${submission?.reviewedAt ? ` on ${new Date(submission.reviewedAt).toLocaleDateString()}` : ""}. Verification is complete — no further action is needed.</p>
+    </div>`;
+  }
+  if (statusLabel === "PENDING") {
+    const submitted = submission?.createdAt ? new Date(submission.createdAt).toLocaleDateString() : null;
+    return `<div class="verify-panel pending glass">
+      <div>&#8987; <b>Verification under review</b></div>
+      <p>We received your documents${submitted ? ` on ${submitted}` : ""}. The Offkay team reviews submissions manually — usually within 24 hours. You'll see the result here.</p>
+    </div>`;
+  }
+  if (statusLabel === "REJECTED") {
+    return `<div class="verify-panel rejected glass">
+      <div>&#10007; <b>Verification rejected</b></div>
+      ${submission?.rejectionReason ? `<p>Reason: ${esc(submission.rejectionReason)}</p>` : ""}
+      <p>Check the reason above, prepare clearer documents, and submit again below.</p>
+      <button class="button primary" data-action="open-verification">Resubmit verification</button>
+    </div>`;
+  }
+  return `<div class="verify-panel glass">
+    <div>&#9676; <b>Verify your identity</b></div>
+    <p>Verified students get more roommate matches, and verified hosts get more bookings. It takes about two minutes.</p>
+    <button class="button primary" data-action="open-verification">Start verification</button>
+  </div>`;
+}
 const dbDownMessage = () => "Offkay can't reach its database right now - it usually reconnects within a minute. Refresh in a moment.";
 
 async function request(url, options = {}) {
@@ -208,6 +270,12 @@ function switchTab(tab, render = true) {
   window.scrollTo({top:0,behavior:"smooth"});
 }
 
+function proximityChip(listing) {
+  const p = listing.proximity;
+  if (!p || !p.distanceText) return "";
+  return `<span class="proximity-chip" title="Distance and travel time to ${esc(p.university)}">&#8982; ${esc(p.university.replace(/ University$|, [A-Za-z ]+$/, ""))} &middot; ${esc(p.distanceText)}${p.etaText ? ` &middot; ${esc(p.etaText)}` : ""}</span>`;
+}
+
 function listingCard(listing, landlordMode = false) {
   const photo = listing.photos?.[0];
   const mine = state.user && listing.ownerId === state.user.id;
@@ -224,6 +292,7 @@ function listingCard(listing, landlordMode = false) {
     </div>
     <div class="listing-info">
       <div class="listing-title-row"><h3>${esc(listing.title)}</h3><span class="rating">&#9733; 4.${7 + (listing.title.length % 3)}</span></div>
+      ${proximityChip(listing)}
       <div class="listing-location">${icon("pin")} ${esc(listing.area)} &middot; ${esc(listing.university)}</div>
       <div class="listing-meta"><span>${listing.bedrooms} bed</span><span>${listing.bathrooms} bath</span><span>${esc(listing.type)}</span></div>
       <div class="listing-foot">
@@ -365,7 +434,7 @@ function renderExplore() {
         <div class="filter-chips">${["All","Studio","Shared","En-suite","Self-contained","Apartment"].map(type=>`<button class="chip ${homeFilters.type===type?"active":""}" data-action="filter-type" data-type="${type}">${type}</button>`).join("")}</div>
       </div>
       <div class="section-head"><div><h2>${items.length} ${items.length===1?"home":"homes"} available</h2><p>View the details, request an inspection, or save a home for later.</p></div></div>
-      ${state.exploreMode==="map" ? mapCanvas(items) : `<div class="listing-grid">${items.map(item=>listingCard(item)).join("") || emptyState("Nothing matches those filters","Try clearing a filter or selecting another university.")}</div>`}`}
+      ${state.exploreMode==="map" ? mapCanvas(items) : `<div class="explore-list">${items.map(item=>listingCard(item)).join("") || emptyState("Nothing matches those filters","Try clearing a filter or selecting another university.")}</div>`}`}
   `;
 }
 
@@ -531,13 +600,13 @@ function renderProfile() {
       <aside class="profile-card glass">
         <span class="avatar large">${initials(state.user.name)}</span>
         <h2>${esc(state.user.name)}</h2><p>${esc(state.user.email)}</p>
-        ${state.user ? `<span class="verified-line">${state.user.verified?"&#10003; Identity verified":"&#9676; Verification pending"}</span>` : `<span class="verified-line">Signed out</span><button class="button primary small" data-action="goto-auth">Sign in</button>`}
+        ${state.user ? verificationBadge(verificationState(), state.verification) : `<span class="verified-line">Signed out</span><button class="button primary small" data-action="goto-auth">Sign in</button>`}
         <div class="profile-stats">
           <div class="profile-stat"><b>${tenant?state.listings.filter(item=>item.saved).length:mine}</b><span>${tenant?"SAVED HOMES":"PROPERTIES"}</span></div>
           <div class="profile-stat"><b>${paid}</b><span>CONFIRMED</span></div>
         </div>
         <div class="account-actions">
-          <button class="settings-row" data-action="open-verification">${icon("verified")}<span><b>Verification</b><small>${esc(state.verification?.status || state.user.verificationStatus || (state.user.verified ? "verified" : "not submitted"))}</small></span><em>&rarr;</em></button>
+          ${verificationPanel(verificationState(), state.verification)}
           <button class="settings-row" data-action="confirm-logout">${icon("settings")}<span><b>Sign out</b><small>End this session on this device</small></span><em>&rarr;</em></button>
           <button class="settings-row" data-action="confirm-delete-account">${icon("settings")}<span><b>Delete my account</b><small>Permanently remove your profile and data</small></span><em>&rarr;</em></button>
         </div>
@@ -612,7 +681,7 @@ function settingsSheet() {
   modal(`
     <div class="modal-head"><div><span class="eyebrow">Settings</span><h2>Account &amp; appearance</h2><p>Palettes, hosting, verification, and your sign-out controls.</p></div><button class="close-button">&times;</button></div>
     <div class="settings-stack">
-      <button class="settings-row" data-action="open-verification">${icon("verified")} <span><b>Manual verification</b><small>NIN, ID card, and student/host document</small></span><em>${esc(state.verification?.status || state.user.verificationStatus || "not submitted")}</em></button>
+      <button class="settings-row" data-action="open-verification">${icon("verified")} <span><b>${verificationState()==="REJECTED"?"Resubmit verification":"Manual verification"}</b><small>NIN, ID card, and student/host document</small></span><em>${esc(verificationStatusLabel())}</em></button>
       ${canHost() ? `<button class="settings-row" data-action="switch-view">${icon("home")} <span><b>${inHostView() ? "Switch to guest view" : "Switch to host view"}</b><small>Keep your bookings and roommate matching in the same account</small></span><em>${inHostView() ? "Host" : "Guest"}</em></button><button class="settings-row" data-action="new-listing">${icon("plus")} <span><b>Add a house</b><small>Every new property goes through verification</small></span><em>Host</em></button>` : `<button class="settings-row" data-action="activate-host">${icon("home")} <span><b>Become a host</b><small>List spaces while keeping your guest account and roommate profile</small></span><em>Start</em></button>`}
       <button class="settings-row" data-action="confirm-logout">${icon("settings")} <span><b>Sign out</b><small>End this session on this device</small></span><em>&rarr;</em></button>
       <button class="settings-row danger-row" data-action="confirm-delete-account">${icon("settings")} <span><b>Delete my account</b><small>Permanently remove your profile, listings, and messages</small></span><em>&rarr;</em></button>
@@ -668,15 +737,25 @@ function confirmDeleteAccount() {
 }
 
 function verificationSheet() {
+  // Only NOT_VERIFIED and REJECTED users should ever reach the form.
+  const statusLabel = verificationState();
+  if (statusLabel === "VERIFIED") {
+    return modal(`<div class="modal-head"><div><span class="eyebrow">Verification</span><h2>Already verified</h2><p>Your identity was reviewed and approved. Verification is complete — there is nothing to resubmit.</p></div><button class="close-button">&times;</button></div><div class="success"><div class="success-icon">&#10003;</div><button class="button primary wide" data-action="close-modal">Done</button></div>`);
+  }
+  if (statusLabel === "PENDING") {
+    return modal(`<div class="modal-head"><div><span class="eyebrow">Verification</span><h2>Verification under review</h2><p>Your documents were submitted and are being reviewed by the Offkay team — usually within 24 hours. We'll show the result here; please don't submit again while the review is running.</p></div><button class="close-button">&times;</button></div><button class="button primary wide" data-action="close-modal">Got it</button>`);
+  }
+  const rejected = statusLabel === "REJECTED";
   modal(`
-    <div class="modal-head"><div><span class="eyebrow">Manual verification</span><h2>Verify your Offkay identity</h2><p>Submit your NIN and ID documents. Offkay reviews this manually before approval.</p></div><button class="close-button">&times;</button></div>
+    <div class="modal-head"><div><span class="eyebrow">Manual verification</span><h2>${rejected ? "Resubmit your documents" : "Verify your Offkay identity"}</h2><p>${rejected ? "Your last submission was rejected. Fix the issue and submit again." : "Submit your NIN and ID documents. Offkay reviews this manually before approval."}</p></div><button class="close-button">&times;</button></div>
+    ${rejected && state.verification?.rejectionReason ? `<div class="payment-note">Rejection reason: ${esc(state.verification.rejectionReason)}</div>` : ""}
     <form class="sheet-form" id="verificationForm">
       <label>NIN<input name="nin" inputmode="numeric" placeholder="Enter your NIN" required></label>
       <label>ID type<select name="idType"><option>Student ID / Matric card</option><option>National ID</option><option>Driver's licence</option><option>International passport</option><option>Host property document</option></select></label>
       <label>ID card photo<input name="idCardImage" type="file" accept="image/*" required><small>Upload a clear photo. Do not upload passwords or payment cards.</small></label>
       <label>Supporting document<input name="supportDocument" type="file" accept="image/*"><small>Admission letter, matric slip, property ownership, or host authorization.</small></label>
-      <button class="button primary wide" type="submit">Submit for manual review</button>
-    </form>`);
+      <button class="button primary wide" type="submit">${rejected ? "Resubmit for review" : "Submit for manual review"}</button>
+    </form>`, rejected);
   $("#verificationForm").onsubmit = submitVerification;
 }
 
@@ -749,12 +828,17 @@ function openListing(id) {
   const photo = item.photos?.[0];
   const mine = state.user && item.ownerId === state.user.id;
   modal(`
-    <div class="modal-head"><div><span class="eyebrow">${item.verified?"&#10003; Verified property":"&#9676; Verification pending"}</span></div><button class="close-button">&times;</button></div>
+    <div class="modal-head"><div><span class="eyebrow">${item.verified?"&#10003; Verified property":"&#9676; Verification under review"}</span></div><button class="close-button">&times;</button></div>
     <div class="listing-detail">
       <div class="detail-image">${photo ? `<img src="${photo}" alt="${esc(item.title)}">` : `<div class="building"></div>`}<span class="map-pin">⌖ ${esc(item.area)}</span></div>
       <div class="detail-copy">
         <span class="eyebrow">${esc(item.type)}</span><h2>${esc(item.title)}</h2><span>&#8982; ${esc(item.area)} &middot; ${esc(item.university)}</span>
         <div class="detail-price">${money(item.price)} <small>/ academic year</small></div>
+        ${item.proximity?.distanceText ? `<div class="proximity-strip">
+          <span class="proximity-strong">${esc(item.proximity.distanceText)}${item.proximity.etaText ? ` &middot; ${esc(item.proximity.etaText)}` : ""}</span>
+          <small>from this home to ${esc(item.proximity.university)}</small>
+          <em>${item.proximity.provider === "estimate" ? "straight-line estimate — actual road distance may differ" : `live route via ${esc(item.proximity.provider)}`}</em>
+        </div>` : ""}
         <p>${esc(item.description || "The owner has not added a description yet.")}</p>
         <div class="amenities">${(item.amenities||[]).map(name=>`<span class="amenity">&#10003; ${esc(name)}</span>`).join("") || `<span class="amenity">No amenities listed</span>`}</div>
         ${mine ? `

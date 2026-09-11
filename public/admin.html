@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <title>Offkay Admin</title>
+  <style>
+    :root{--ink:#10231d;--muted:#5f6e66;--green:#0d7a56;--line:rgba(16,35,29,.12);--card:#fff;--danger:#c65454;--bg:#f4f6f2}
+    *{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+    .wrap{max-width:980px;margin:0 auto;padding:28px 20px 80px}
+    .lock{max-width:420px;margin:14vh auto;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:32px}
+    .lock h1{margin:0 0 6px;font-size:22px}.lock p{margin:0 0 20px;color:var(--muted);font-size:14px}
+    input{width:100%;padding:11px 14px;border:1px solid var(--line);border-radius:10px;font:inherit;background:#fff}
+    .btn{border:none;border-radius:10px;padding:11px 18px;font-weight:700;cursor:pointer;background:var(--green);color:#fff}
+    .btn.secondary{background:#eef2ee;color:var(--ink)}.btn.danger{background:var(--danger)}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+    header h1{font-size:20px;margin:0}
+    .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:26px}
+    .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+    .stat b{display:block;font-size:22px}.stat span{color:var(--muted);font-size:12px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:14px}
+    .row{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap}
+    .who b{font-size:16px}.who small{color:var(--muted);display:block;margin-top:2px}
+    .tag{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;background:#eef2ee;color:var(--ink)}
+    .tag.pending{background:#fdf3e2;color:#9a6b1b}.tag.verified{background:#e2f5ec;color:#0d7a56}.tag.rejected{background:#fde8e8;color:#c65454}
+    .actions{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+    .link{background:none;border:none;color:var(--green);font:inherit;font-weight:600;cursor:pointer;padding:0}
+    .doc-view{margin-top:12px;border:1px solid var(--line);border-radius:10px;max-width:340px;max-height:340px;object-fit:contain;background:#fafafa}
+    .reason{margin-top:12px;width:100%}
+    .hidden{display:none!important}
+    .empty{color:var(--muted);text-align:center;padding:30px 0}
+    .muted{color:var(--muted);font-size:13px}
+    code{background:#eef2ee;padding:2px 6px;border-radius:6px;font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div id="lock" class="lock">
+      <h1>Offkay admin</h1>
+      <p>Enter the admin token from your environment (<code>ADMIN_TOKEN</code>) to review verification submissions, listings, and reports. Submissions are encrypted at rest and only decrypted here.</p>
+      <form id="tokenForm">
+        <input id="tokenInput" type="password" placeholder="Admin token" required autocomplete="off">
+        <button class="btn" style="margin-top:12px;width:100%">Open console</button>
+      </form>
+      <p class="muted" style="margin-top:14px">The token stays in this tab's sessionStorage and is never logged.</p>
+    </div>
+    <div id="console" class="hidden">
+      <header>
+        <h1>🛡️ Offkay admin</h1>
+        <div style="display:flex;gap:8px">
+          <button id="refreshButton" class="btn secondary">Refresh</button>
+          <button id="lockButton" class="btn secondary">Lock</button>
+        </div>
+      </header>
+      <div id="stats" class="stats"></div>
+      <h2 style="font-size:16px;margin:22px 0 10px">Identity verifications awaiting review</h2>
+      <div id="verifications"></div>
+      <h2 style="font-size:16px;margin:22px 0 10px">Properties awaiting verification</h2>
+      <div id="listings"></div>
+      <h2 style="font-size:16px;margin:22px 0 10px">Safety reports</h2>
+      <div id="reports"></div>
+      <h2 style="font-size:16px;margin:22px 0 10px">Recent users</h2>
+      <div id="users"></div>
+    </div>
+  </div>
+  <script src="/admin.js"></script>
+</body>
+</html>

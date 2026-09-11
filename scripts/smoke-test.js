@@ -72,7 +72,7 @@ async function waitForServer(proc) {
 function bootServer() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "offkay-test-"));
   const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "" },
+    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "", ADMIN_TOKEN: "test-admin-token" },
     stdio: ["ignore", "inherit", "inherit"]
   });
   return { proc, tmp };
@@ -330,6 +330,63 @@ async function run() {
     check("third tenant rejected on full listing (409)", capBookingC.status === 409);
     const capCancel = await call(capB, "POST", `/api/bookings/${capBookingB.payload.booking.id}/cancel`);
     check("paid booking cannot be cancelled", capCancel.status === 409);
+
+    console.log("== verification lifecycle ==");
+    {
+      const vjar = jar();
+      await call(vjar, "POST", "/api/auth/signup", { name:"Verify Me", email:"verify@example.com", password:"password123", university:"University of Lagos" });
+      const start = await call(vjar, "GET", "/api/verification");
+      check("new user verification status is NOT_VERIFIED", start.status === 200 && start.payload.statusLabel === "NOT_VERIFIED");
+
+      const tinyPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+      const submit = await call(vjar, "POST", "/api/verification", { nin:"12345678901", idType:"Student ID / Matric card", idCardImage:tinyPng, supportDocument:tinyPng });
+      check("verification submission persists as PENDING", submit.status === 201 && submit.payload.verification?.statusLabel === "PENDING");
+      check("owner view never includes document bytes", !("idCardImage" in (submit.payload.verification || {})) && !("nin" in (submit.payload.verification || {})));
+
+      const docBlocked = await fetch(`${URL_BASE}/api/admin/verification/${submit.payload.verification.id}/document/idCard`);
+      check("documents blocked without admin token (401)", docBlocked.status === 401);
+
+      const approval = await fetch(`${URL_BASE}/api/admin/verification/${submit.payload.verification.id}/review`, {
+        method: "POST",
+        headers: { "Content-Type":"application/json", "Authorization":"Bearer test-admin-token" },
+        body: JSON.stringify({ decision: "approve" })
+      });
+      check("admin with token can approve", approval.status === 200);
+      const afterApprove = await call(vjar, "GET", "/api/verification");
+      check("user becomes VERIFIED after approval", afterApprove.payload.statusLabel === "VERIFIED");
+      const resubmit = await call(vjar, "POST", "/api/verification", { nin:"12345678901", idCardImage:tinyPng });
+      check("resubmission after VERIFIED is blocked server-side (409)", resubmit.status === 409);
+
+      const rjar = jar();
+      await call(rjar, "POST", "/api/auth/signup", { name:"Reject Me", email:"rejectme@example.com", password:"password123", university:"University of Lagos" });
+      const rSubmit = await call(rjar, "POST", "/api/verification", { nin:"10987654321", idType:"National ID", idCardImage:tinyPng });
+      check("second subject submits as PENDING", rSubmit.status === 201 && rSubmit.payload.verification?.statusLabel === "PENDING");
+      const rejectDecision = await fetch(`${URL_BASE}/api/admin/verification/${rSubmit.payload.verification.id}/review`, {
+        method: "POST",
+        headers: { "Content-Type":"application/json", "Authorization":"Bearer test-admin-token" },
+        body: JSON.stringify({ decision: "reject", reason: "ID photo is blurry" })
+      });
+      check("admin can reject with reason", rejectDecision.status === 200);
+      const afterReject = await call(rjar, "GET", "/api/verification");
+      check("user sees REJECTED with reason", afterReject.payload.statusLabel === "REJECTED" && afterReject.payload.verification?.rejectionReason === "ID photo is blurry");
+      const rResubmit = await call(rjar, "POST", "/api/verification", { nin:"10987654321", idType:"National ID", idCardImage:tinyPng });
+      check("rejected user can resubmit to PENDING", rResubmit.status === 201 && rResubmit.payload.verification?.statusLabel === "PENDING");
+
+      const overview = await fetch(`${URL_BASE}/api/admin/overview`, { headers: { Authorization: "Bearer test-admin-token" } });
+      const overviewBody = await overview.json();
+      check("admin overview lists PENDING submissions with applicant info", overview.status === 200 && overviewBody.verifications.some(v => v.statusLabel === "PENDING" && v.applicantName && v.applicantEmail));
+      const docOk = await fetch(`${URL_BASE}/api/admin/verification/${rResubmit.payload.verification.id}/document/idCard`, { headers: { Authorization: "Bearer test-admin-token" } });
+      check("admin with token can fetch document bytes", docOk.status === 200);
+    }
+
+    console.log("== distance and eta ==");
+    {
+      const geoRes = await fetch(`${URL_BASE}/api/bootstrap`);
+      const geoBody = await geoRes.json();
+      check("bootstrap listings include proximity summary with no raw coordinates", geoBody.listings.every(l => !("latitude" in l) && !("longitude" in l)));
+      const dist = await call(null, "GET", `/api/distance/university?university=${encodeURIComponent("Nowhere University")}`);
+      check("unknown university handled gracefully", dist.status === 200 && dist.payload.available === false);
+    }
 
     console.log("== account management ==");
     const wrongDelete = await call(tenant, "DELETE", "/api/account", { password:"not-the-password" });
