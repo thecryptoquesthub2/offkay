@@ -194,3 +194,27 @@ button.roommate-avatar{border:0;color:white;font-weight:750;background:var(--pri
 /* Fully-booked indication */
 .booked-tag{background:color-mix(in srgb,var(--danger) 14%,white)!important;color:var(--danger)!important;font-weight:750}
 .occupancy-tag{background:color-mix(in srgb,var(--primary) 12%,white)!important;color:var(--primary)!important;font-weight:650}
+
+/* ============ Auth screen: calm premium backdrop ============ */
+/* Soft layered color washes in brand hues; the card floats on them. Uses
+   theme variables so every theme (incl. midnight) renders a calm scene. */
+.auth-screen{position:relative;background:
+  radial-gradient(1100px 700px at 12% -10%,color-mix(in srgb,var(--accent) 20%,transparent),transparent 62%),
+  radial-gradient(900px 620px at 108% 12%,color-mix(in srgb,var(--conversion) 11%,transparent),transparent 56%),
+  radial-gradient(1000px 820px at 50% 118%,color-mix(in srgb,var(--primary) 13%,transparent),transparent 62%),
+  var(--bg)}
+.auth-screen::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(600px 440px at 50% 40%,color-mix(in srgb,var(--surface-strong) 50%,transparent),transparent 72%)}
+.auth-panel{position:relative}
+.auth-box{position:relative;border-radius:30px;padding:34px 30px;background:color-mix(in srgb,var(--surface-strong) 92%,transparent);border-color:color-mix(in srgb,var(--border) 82%,transparent);box-shadow:0 1px 2px rgba(16,32,44,.05),0 34px 80px -38px color-mix(in srgb,var(--primary) 46%,transparent);animation:authIn .55s cubic-bezier(.2,.85,.25,1)}
+@keyframes authIn{from{opacity:0;transform:translateY(14px) scale(.985)}}
+.auth-box::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;border-radius:30px 30px 0 0;background:linear-gradient(90deg,var(--accent),var(--primary),var(--conversion));opacity:.9}
+.mobile-brand{align-items:center;justify-content:center;gap:10px;margin-bottom:24px}
+.auth-screen .eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:700;color:color-mix(in srgb,var(--primary) 78%,var(--text-secondary))}
+.auth-screen .form-stack input,.auth-screen .form-stack select{background:color-mix(in srgb,var(--bg) 48%,var(--surface-strong));border-radius:14px;transition:border-color .2s ease,box-shadow .2s ease}
+.auth-screen .form-stack input:focus,.auth-screen .form-stack select:focus{border-color:color-mix(in srgb,var(--primary) 55%,transparent);box-shadow:0 0 0 4px color-mix(in srgb,var(--primary) 12%,transparent)}
+.auth-screen .button.primary{background:linear-gradient(140deg,color-mix(in srgb,var(--primary) 86%,white),var(--primary));box-shadow:0 14px 30px -14px color-mix(in srgb,var(--primary) 72%,transparent)}
+.auth-screen .role-picker{padding:5px;border-radius:16px;background:color-mix(in srgb,var(--secondary) 72%,transparent)}
+.auth-screen .role-option{border-radius:12px}
+.auth-screen .role-option.active{box-shadow:0 3px 10px -4px color-mix(in srgb,var(--primary) 34%,transparent)}
+.auth-screen .demo-login{background:color-mix(in srgb,var(--primary) 8%,transparent)}
+.auth-screen .text-button b{color:var(--primary)}
