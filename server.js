@@ -213,7 +213,7 @@ function mongoDb() {
 // mistakes instantly, without connecting and without exposing the value.
 function lintMongoUri(uri) {
   if (/<(db_)?(password|username)>/i.test(uri)) {
-    return { code: "placeholder-credentials", hint: "The connection string still contains a <password> or <username> placeholder - replace it with your real database credentials (without the angle brackets)." };
+    return { code: "placeholder-credentials", hint: "The connection string still contains <db_password> - replace it with the real database user's password from Atlas > Database Access, keeping everything else exactly as copied (no angle brackets)." };
   }
   if (/^["'`]|["'`]\s*$|^\s+|\s+$/.test(uri)) {
     return { code: "quoting", hint: "MONGODB_URI has stray quotes or spaces around it - in Vercel > Settings > Environment Variables, save the value with nothing before mongodb+srv:// or after the last character." };
