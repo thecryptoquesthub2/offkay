@@ -51,7 +51,7 @@ const universities = [
 ];
 
 function id(prefix) {
-  return `${prefix}_${crypto.randomBytes(7).toString("hex")}`;
+  return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
 }
 
 function seedDb() {
@@ -173,26 +173,45 @@ function readDb() {
 // is set the whole app state lives in one MongoDB document instead of db.json.
 const USE_MONGODB = Boolean(process.env.MONGODB_URI);
 
-let mongoCollectionPromise = null;
-function mongoCollection() {
-  if (!mongoCollectionPromise) {
+let mongoDbPromise = null;
+function mongoDb() {
+  if (!mongoDbPromise) {
     const { MongoClient } = require("mongodb");
-    mongoCollectionPromise = new MongoClient(process.env.MONGODB_URI, { maxPoolSize: 5 }).connect()
-      .then(client => client.db(process.env.MONGODB_DB || "offkay").collection("appstate"));
+    mongoDbPromise = new MongoClient(process.env.MONGODB_URI, { maxPoolSize: 5 }).connect()
+      .then(client => client.db(process.env.MONGODB_DB || "offkay"));
   }
-  return mongoCollectionPromise;
+  return mongoDbPromise;
 }
 
 async function loadDb() {
   if (!USE_MONGODB) return readDb();
-  const collection = await mongoCollection();
-  const stored = await collection.findOne({ _id: "appstate" });
-  if (stored) {
-    const db = { ...stored };
-    delete db._id;
-    return readDbShape(db);
-  }
-  return readDbShape(seedDb());
+  const database = await mongoDb();
+  const [meta, users, sessions, listings, saved, conversations, messages, bookings, inspections, reports, verifications] = await Promise.all([
+    database.collection("state").findOne({ _id: "counters" }),
+    database.collection("users").find({}).toArray(),
+    database.collection("sessions").find({}).toArray(),
+    database.collection("listings").find({}).toArray(),
+    database.collection("saved").find({}).toArray(),
+    database.collection("conversations").find({}).toArray(),
+    database.collection("messages").find({}).toArray(),
+    database.collection("bookings").find({}).toArray(),
+    database.collection("inspections").find({}).toArray(),
+    database.collection("reports").find({}).toArray(),
+    database.collection("verifications").find({}).toArray()
+  ]);
+  const db = readDbShape({
+    users: users.map(({ _id, ...rest }) => rest),
+    sessions: sessions.map(({ _id, ...rest }) => rest),
+    listings: listings.map(({ _id, ...rest }) => rest),
+    saved: saved.map(({ _id, ...rest }) => rest),
+    conversations: conversations.map(({ _id, ...rest }) => rest),
+    messages: messages.map(({ _id, ...rest }) => rest),
+    bookings: bookings.map(({ _id, ...rest }) => rest),
+    inspections: inspections.map(({ _id, ...rest }) => rest),
+    reports: reports.map(({ _id, ...rest }) => rest),
+    verifications: verifications.map(({ _id, ...rest }) => rest)
+  });
+  return db;
 }
 
 async function persistDb(db) {
@@ -200,9 +219,31 @@ async function persistDb(db) {
     await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return;
   }
-  const collection = await mongoCollection();
-  const { _id, ...state } = db;
-  await collection.replaceOne({ _id: "appstate" }, { _id: "appstate", ...state }, { upsert: true });
+  const database = await mongoDb();
+  const collections = {
+    users: db.users || [],
+    sessions: db.sessions || [],
+    listings: db.listings || [],
+    saved: db.saved || [],
+    conversations: db.conversations || [],
+    messages: db.messages || [],
+    bookings: db.bookings || [],
+    inspections: db.inspections || [],
+    reports: db.reports || [],
+    verifications: db.verifications || []
+  };
+  const stableId = (name, item) => item.id
+    || item.token
+    || (name === "saved" && item.userId && item.listingId ? `${item.userId}:${item.listingId}` : null)
+    || crypto.createHash("sha1").update(JSON.stringify(item)).digest("hex");
+  const writes = Object.entries(collections).map(([name, items]) => {
+    if (!items.length) return Promise.resolve();
+    const collection = database.collection(name);
+    return collection.bulkWrite(items.map(item => ({
+      replaceOne: { filter: { _id: stableId(name, item) }, replacement: { ...item, _id: stableId(name, item) }, upsert: true }
+    })), { ordered: false });
+  });
+  await Promise.all(writes);
 }
 
 function readDbShape(db) {
@@ -273,7 +314,13 @@ function canHost(user) {
 }
 
 function json(res, status, payload, headers = {}) {
-  res.writeHead(status, { "Content-Type":"application/json; charset=utf-8", "Cache-Control":"no-store", ...headers });
+  res.writeHead(status, {
+    "Content-Type":"application/json; charset=utf-8",
+    "Cache-Control":"no-store",
+    "X-Content-Type-Options":"nosniff",
+    "Referrer-Policy":"no-referrer",
+    ...headers
+  });
   res.end(JSON.stringify(payload));
 }
 
@@ -290,14 +337,23 @@ function error(res, status, message) {
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
+    let overflow = false;
+    let drained = 0;
     req.on("data", chunk => {
+      if (overflow) {
+        drained += chunk.length;
+        if (drained > 8_000_000) req.destroy();
+        return;
+      }
       body += chunk;
-      if (body.length > 4_000_000) {
+      if (body.length > 2_000_000) {
+        overflow = true;
+        body = "";
         reject(new Error("Request is too large"));
-        req.destroy();
       }
     });
     req.on("end", () => {
+      if (overflow) return;
       try { resolve(body ? JSON.parse(body) : {}); }
       catch { reject(new Error("Invalid JSON")); }
     });
@@ -384,8 +440,26 @@ function paystackWebhookSignatureValid(req, rawBody) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+const rateBuckets = new Map();
+function rateLimit(key, limit, windowMs) {
+  const now = Date.now();
+  const bucket = rateBuckets.get(key);
+  if (!bucket || now > bucket.reset) {
+    rateBuckets.set(key, { count: 1, reset: now + windowMs });
+    return true;
+  }
+  bucket.count += 1;
+  return bucket.count <= limit;
+}
+
 async function api(req, res, url) {
+  const ip = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "local";
+  if (!rateLimit(`ip:${ip}`, 300, 60_000)) return error(res, 429, "Too many requests. Slow down a moment.");
   const db = await loadDb();
+  if (db.sessions.some(session => session.expiresAt <= Date.now())) {
+    db.sessions = db.sessions.filter(session => session.expiresAt > Date.now());
+    await persistDb(db);
+  }
   const user = currentUser(req, db);
   const method = req.method;
   const route = url.pathname;
@@ -423,6 +497,7 @@ async function api(req, res, url) {
   }
 
   if (route === "/api/auth/signup" && method === "POST") {
+    if (!rateLimit(`ip:${ip}:signup`, 10, 3_600_000)) return error(res, 429, "Too many sign-up attempts from this network. Try again later.");
     const body = await parseBody(req);
     const name = String(body.name || "").trim();
     const email = String(body.email || "").trim().toLowerCase();
@@ -447,6 +522,7 @@ async function api(req, res, url) {
   }
 
   if (route === "/api/auth/login" && method === "POST") {
+    if (!rateLimit(`ip:${ip}:login`, 30, 15 * 60_000)) return error(res, 429, "Too many sign-in attempts. Wait a few minutes.");
     const body = await parseBody(req);
     const account = db.users.find(item => item.email === String(body.email || "").trim().toLowerCase());
     if (!account || !verifyPassword(body.password, account.password)) return error(res, 401, "Email or password is incorrect");
@@ -484,11 +560,12 @@ async function api(req, res, url) {
   if (route === "/api/profile" && method === "PATCH") {
     const account = requireUser(req,res,db); if (!account) return;
     const body = await parseBody(req);
+    const fieldCaps = { name: 80, phone: 20, bio: 400 };
     ["name","phone","university","bio"].forEach(key => {
-      if (body[key] !== undefined) account[key] = String(body[key]).trim();
+      if (body[key] !== undefined) account[key] = String(body[key]).trim().slice(0, fieldCaps[key] || 100);
     });
-    if (body.budget !== undefined) account.budget = Math.max(0, Number(body.budget) || 0);
-    if (Array.isArray(body.habits)) account.habits = body.habits.slice(0,8).map(String);
+    if (body.budget !== undefined) account.budget = Math.max(0, Math.min(10_000_000, Number(body.budget) || 0));
+    if (Array.isArray(body.habits)) account.habits = body.habits.slice(0,8).map(habit => String(habit).slice(0,40));
     await persistDb(db);
     return json(res, 200, {user:publicUser(account)});
   }
@@ -600,6 +677,7 @@ async function api(req, res, url) {
 
   if (route === "/api/reports" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
+    if (!rateLimit(`user:${account.id}:reports`, 5, 3_600_000)) return error(res, 429, "Too many reports sent. Try again later.");
     const body = await parseBody(req);
     const listing = db.listings.find(item => item.id === body.listingId);
     if (!listing) return error(res,404,"Property not found");
@@ -705,6 +783,7 @@ async function api(req, res, url) {
 
   if (route === "/api/bookings" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
+    if (!rateLimit(`user:${account.id}:bookings`, 10, 3_600_000)) return error(res, 429, "Too many booking attempts. Try again later.");
     if (account.role !== "tenant") return error(res,403,"Only tenant accounts can book a property");
     const body = await parseBody(req);
     const listing = db.listings.find(item => item.id === body.listingId && item.status === "active");
@@ -798,7 +877,10 @@ async function api(req, res, url) {
 
   if (route === "/api/payments/webhook" && method === "POST") {
     const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
+    for await (const chunk of req) {
+      chunks.push(chunk);
+      if (chunks.reduce((sum, part) => sum + part.length, 0) > 500_000) return error(res, 413, "Payload too large");
+    }
     const rawBody = Buffer.concat(chunks);
     if (!paystackWebhookSignatureValid(req, rawBody)) return error(res, 401, "Invalid webhook signature");
     let event = null;
@@ -826,17 +908,19 @@ const mime = {
 };
 
 function serveStatic(req,res,url) {
-  let pathname = decodeURIComponent(url.pathname);
+  let pathname;
+  try { pathname = decodeURIComponent(url.pathname); }
+  catch { return error(res,400,"Bad request"); }
   if (pathname === "/") pathname = "/index.html";
   const requested = path.normalize(path.join(PUBLIC_DIR, pathname));
   if (!requested.startsWith(PUBLIC_DIR)) return error(res,403,"Forbidden");
   fs.stat(requested,(err,stats)=>{
     if (err || !stats.isFile()) {
       const index = path.join(PUBLIC_DIR,"index.html");
-      res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});
+      res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","X-Content-Type-Options":"nosniff"});
       return fs.createReadStream(index).pipe(res);
     }
-    res.writeHead(200,{"Content-Type":mime[path.extname(requested)] || "application/octet-stream","Cache-Control":"no-cache"});
+    res.writeHead(200,{"Content-Type":mime[path.extname(requested)] || "application/octet-stream","Cache-Control":"no-cache","X-Content-Type-Options":"nosniff"});
     fs.createReadStream(requested).pipe(res);
   });
 }
@@ -849,6 +933,7 @@ async function handler(req,res) {
     return serveStatic(req,res,url);
   } catch (err) {
     console.error(err);
+    if (err.message === "Request is too large") return error(res, 413, "Request is too large");
     return error(res,500,err.message === "Invalid JSON" ? err.message : "Something went wrong");
   }
 }

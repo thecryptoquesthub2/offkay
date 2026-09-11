@@ -1,0 +1,218 @@
+#!/usr/bin/env node
+// Pen-test + stress suite for Offkay. Boots a disposable server on an isolated
+// temp database and probes security and load behavior. Usage: node scripts/security-test.js
+"use strict";
+
+const { spawn } = require("node:child_process");
+const os = require("node:os");
+const path = require("node:path");
+const fs = require("node:fs");
+
+const PORT = 4598;
+const BASE = `http://127.0.0.1:${PORT}`;
+
+let passed = 0;
+let failed = 0;
+const failures = [];
+
+function check(name, condition, extra = "") {
+  if (condition) { passed++; console.log(`  ok   ${name}`); }
+  else { failed++; failures.push(name); console.log(`  FAIL ${name} ${extra}`); }
+}
+
+function jar() {
+  const cookies = new Map();
+  return {
+    header: () => [...cookies.entries()].map(([k, v]) => `${k}=${v}`).join("; "),
+    absorb: res => {
+      for (const line of (res.headers.getSetCookie ? res.headers.getSetCookie() : [])) {
+        const [pair] = line.split(";");
+        const idx = pair.indexOf("=");
+        if (idx > 0) cookies.set(pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
+      }
+    }
+  };
+}
+
+let clientIp = 10;
+const nextIp = () => `10.9.${clientIp++}.7`;
+
+async function call(j, method, url, body, extraHeaders = {}) {
+  const res = await fetch(`${BASE}${url}`, {
+    method,
+    headers: {
+      "x-forwarded-for": nextIp(),
+      ...(body ? { "Content-Type": "application/json" } : {}),
+      ...(j ? { Cookie: j.header() } : {}),
+      ...extraHeaders
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (j) j.absorb(res);
+  const payload = await res.json().catch(() => ({}));
+  return { status: res.status, payload, headers: res.headers };
+}
+
+async function waitForServer(proc) {
+  for (let i = 0; i < 60; i++) {
+    try { if ((await fetch(`${BASE}/api/bootstrap`)).ok) return; } catch {}
+    await new Promise(r => setTimeout(r, 100));
+  }
+  proc.kill("SIGKILL");
+  throw new Error("security test server did not start");
+}
+
+async function run() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "offkay-sec-"));
+  const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
+    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "" },
+    stdio: ["ignore", "ignore", "ignore"]
+  });
+  try {
+    await waitForServer(proc);
+
+    console.log("== security headers & static safety ==");
+    {
+      const home = await fetch(`${BASE}/`);
+      check("static responses set nosniff", home.headers.get("x-content-type-options") === "nosniff");
+      const traversal1 = await fetch(`${BASE}/..%2f..%2f..%2fetc%2fpasswd`);
+      check("encoded traversal blocked", traversal1.status === 400 || traversal1.status === 403);
+      const traversal2 = await fetch(`${BASE}/../../etc/passwd`);
+      const text2 = await traversal2.text();
+      check("plain traversal does not leak /etc/passwd", traversal2.status >= 400 || !text2.includes("root:"));
+      const backslash = await fetch(`${BASE}/..%5c..%5cetc%2fpasswd`);
+      const text3 = await backslash.text();
+      check("backslash traversal does not leak files", backslash.status >= 400 || !text3.includes("root:"));
+    }
+
+    console.log("== payload limits ==");
+    {
+      clientIp = 40;
+      const big = "x".repeat(2_500_000);
+      const res = await fetch(`${BASE}/api/auth/signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: big, email: "big@example.com", password: "password123" })
+      });
+      check("oversized signup payload rejected (413)", res.status === 413);
+      const badJson = await call(null, "POST", "/api/auth/login", undefined);
+      check("empty body login handled (400/401)", [400, 401].includes(badJson.status));
+    }
+
+    console.log("== brute force protection ==");
+    {
+      clientIp = 60;
+      let lastStatus = 0;
+      for (let i = 0; i < 35; i++) {
+        const res = await fetch(`${BASE}/api/auth/login`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "tenant@demo.test", password: `wrong-${i}` })
+        });
+        lastStatus = res.status;
+        if (res.status === 429) break;
+      }
+      check("repeated failed logins hit rate limit (429)", lastStatus === 429);
+    }
+
+    console.log("== XSS injection attempts ==");
+    {
+      clientIp = 80;
+      const xss = jar();
+      const name = `<script>alert(1)</script>Evil`;
+      await call(xss, "POST", "/api/auth/signup", { name, email: "xss@example.com", password: "password123", role: "tenant", university: "University of Ibadan" });
+      const bootstrap = await call(xss, "GET", "/api/bootstrap");
+      check("stored XSS name survives but is stored verbatim for client escaping", bootstrap.payload.user?.name === name);
+      const badProfile = await call(xss, "PATCH", "/api/profile", { bio: "x".repeat(5000) });
+      check("oversized bio truncated server-side", badProfile.status === 200 && badProfile.payload.user.bio.length <= 400);
+      const badBudget = await call(xss, "PATCH", "/api/profile", { budget: "not-a-number" });
+      check("non-numeric budget coerced safely", badBudget.status === 200 && badBudget.payload.user.budget === 0);
+      const hugeHabits = await call(xss, "PATCH", "/api/profile", { habits: Array.from({ length: 50 }, (_, i) => `h${i}`) });
+      check("habit list capped", hugeHabits.status === 200 && hugeHabits.payload.user.habits.length <= 8);
+    }
+
+    console.log("== authorization (IDOR) probes ==");
+    {
+      clientIp = 100;
+      const attacker = jar();
+      await call(attacker, "POST", "/api/auth/signup", { name: "Attacker", email: "attacker@example.com", password: "password123", role: "tenant", university: "University of Ibadan" });
+      const victim = jar();
+      await call(victim, "POST", "/api/auth/login", { email: "tenant@demo.test", password: "demo1234" });
+      const victimBootstrap = await call(victim, "GET", "/api/bootstrap");
+      const victimId = victimBootstrap.payload.user.id;
+
+      const deleteOther = await call(attacker, "DELETE", "/api/account", { password: "password123" });
+      check("attacker deleting account works only for self", deleteOther.status === 200);
+
+      const attacker2 = jar();
+      await call(attacker2, "POST", "/api/auth/signup", { name: "Attacker 2", email: "attacker2@example.com", password: "password123", role: "tenant", university: "University of Ibadan" });
+      const fakeListing = await call(attacker2, "PATCH", "/api/listings/lst_palm", { status: "hidden" });
+      check("attacker cannot modify someone else's listing (403)", fakeListing.status === 403);
+      const deleteOtherListing = await call(attacker2, "DELETE", "/api/listings/lst_palm");
+      check("attacker cannot delete someone else's listing (403)", deleteOtherListing.status === 403);
+
+      const anonMessage = await call(null, "GET", "/api/conversations/con_demo/messages");
+      check("anonymous cannot read conversations (401)", anonMessage.status === 401);
+      const outsiderConvo = await call(attacker2, "GET", "/api/conversations/con_demo/messages");
+      check("non-member cannot read demo conversation (404)", outsiderConvo.status === 404);
+
+      const web = await fetch(`${BASE}/api/payments/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: "charge.success", data: { reference: "x", amount: 1 } }) });
+      check("unsigned webhook rejected (401)", web.status === 401);
+    }
+
+    console.log("== race: concurrent duplicate signups ==");
+    {
+      clientIp = 200;
+      const email = `race.${Date.now()}@example.com`;
+      const attempts = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+        fetch(`${BASE}/api/auth/signup`, {
+          method: "POST", headers: { "Content-Type": "application/json", "x-forwarded-for": `10.20.0.${i}` },
+          body: JSON.stringify({ name: "Race Tester", email, password: "password123", role: "tenant", university: "University of Ibadan" })
+        }).then(r => r.status)
+      ));
+      const created = attempts.filter(status => status === 201).length;
+      const conflicts = attempts.filter(status => status === 409).length;
+      check("exactly one signup wins the race", created === 1 && conflicts === 7, `got ${JSON.stringify(attempts)}`);
+    }
+
+    console.log("== stress: burst traffic ==");
+    {
+      clientIp = 300;
+      const anonBootstrap = await Promise.all(Array.from({ length: 60 }, () => fetch(`${BASE}/api/bootstrap`).then(r => r.status)));
+      check("60 parallel bootstraps all 200", anonBootstrap.every(s => s === 200));
+      const demo = jar();
+      await call(demo, "POST", "/api/auth/login", { email: "tenant@demo.test", password: "demo1234" });
+      const burst = await Promise.all(Array.from({ length: 40 }, () => call(demo, "GET", "/api/bootstrap")));
+      check("40 parallel authenticated bootstraps all 200", burst.every(r => r.status === 200));
+      const messages = await Promise.all(Array.from({ length: 12 }, (_, i) =>
+        call(demo, "POST", "/api/conversations/con_demo/messages", { text: `stress message ${i}` })
+      ));
+      check("parallel messages all accepted", messages.every(r => r.status === 201));
+      const convo = await call(demo, "GET", "/api/conversations/con_demo/messages");
+      const stressTexts = convo.payload.messages.filter(m => m.text.startsWith("stress message ")).map(m => m.text);
+      const unique = new Set(stressTexts);
+      check("no lost or duplicated messages under burst", unique.size === 12, `saw ${unique.size}`);
+    }
+
+    console.log("== session expiry purge ==");
+    {
+      clientIp = 400;
+      const dbPath = path.join(tmp, "db.json");
+      const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
+      db.sessions.push({ token: "expired_test_token", userId: db.users[0].id, expiresAt: Date.now() - 1000 });
+      fs.writeFileSync(dbPath, JSON.stringify(db));
+      const after = await call(jar(), "GET", "/api/bootstrap");
+      check("server still healthy after injecting expired session", after.status === 200);
+      const cleaned = JSON.parse(fs.readFileSync(dbPath, "utf8"));
+      check("expired session purged from store", !cleaned.sessions.some(s => s.token === "expired_test_token"));
+    }
+
+  } finally {
+    proc.kill("SIGKILL");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+
+  console.log(`\n${passed} passed, ${failed} failed`);
+  if (failed) { console.log("Failures:", failures.join(", ")); process.exit(1); }
+}
+
+run().catch(err => { console.error(err); process.exit(1); });
