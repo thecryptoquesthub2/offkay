@@ -209,26 +209,36 @@ function mongoDb() {
   return mongoDbPromise;
 }
 
+// Maps a Mongo driver failure to { code, hint } — user-facing diagnostics
+// without ever leaking credentials or connection-string details.
+function classifyDbError(lastError) {
+  const reason = String(lastError?.message || lastError?.code || "").toLowerCase();
+  let hint = "In Atlas, open Network Access and allow connections from anywhere (0.0.0.0/0), then refresh.";
+  if (/auth|sasl|illegal|username|password/.test(reason)) hint = "The database username or password in MONGODB_URI is wrong - re-copy the connection string from Atlas.";
+  else if (/srv|querysrv|enotfound|getaddrinfo|dns/.test(reason)) hint = "The cluster hostname could not be resolved - re-copy the connection string from Atlas.";
+  const codeMatch = String([lastError?.code, lastError?.codeName, lastError?.message].filter(Boolean).join(" ")).match(/(querySrv \w+|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|ESERVFAIL|authentication failed|bad auth|illegal scheme|invalid scheme|tlsv\d+|SSL[ \w]+|connection closed|timed out)/i);
+  const code = String(lastError?.codeName || lastError?.code || (codeMatch && codeMatch[0]) || "unknown").slice(0, 48);
+  return { hint, code };
+}
+
 async function loadDb() {
   if (!USE_MONGODB) return readDb();
   let database = null;
   let lastError = null;
   for (let attempt = 0; attempt < 2 && !database; attempt++) {
-    if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 800));
+    if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 300));
     try {
-      database = await mongoDb();
+      database = await Promise.race([
+        mongoDb(),
+        new Promise((unused, reject) => setTimeout(() => reject(Object.assign(new Error("connection timed out after 6s"), { code: "ETIMEDOUT" })), 6_000))
+      ]);
     } catch (err) {
       lastError = err;
     }
   }
   if (!database) {
-    const reason = String(lastError?.message || lastError?.code || "").toLowerCase();
-    let hint = "In Atlas, open Network Access and allow connections from anywhere (0.0.0.0/0), then refresh.";
-    if (/auth|sasl|illegal|username|password/.test(reason)) hint = "The database username or password in MONGODB_URI is wrong - re-copy the connection string from Atlas.";
-    else if (/srv|querysrv|enotfound|getaddrinfo|dns/.test(reason)) hint = "The cluster hostname could not be resolved - re-copy the connection string from Atlas.";
+    const { hint, code } = classifyDbError(lastError);
     console.error("Database unavailable:", lastError?.message);
-    const codeMatch = String([lastError?.code, lastError?.codeName, lastError?.message].filter(Boolean).join(" ")).match(/(querySrv \w+|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|ESERVFAIL|authentication failed|bad auth|illegal scheme|invalid scheme|tlsv\d+|SSL[ \w]+|connection closed|timed out)/i);
-    const code = String(lastError?.codeName || lastError?.code || (codeMatch && codeMatch[0]) || "unknown").slice(0, 48);
     const boom = new Error(`Database connection failed. ${hint} [code: ${code}]`);
     boom.status = 503;
     throw boom;
@@ -521,7 +531,31 @@ function rateLimit(key, limit, windowMs) {
   return bucket.count <= limit;
 }
 
+// Public, secret-free health probe. Answers without touching loadDb() or the
+// rate limiter, so it stays reachable even while the database is unreachable.
+// Reports the driver error code so an Atlas outage can be diagnosed from the
+// browser without exposing any credentials or connection strings.
+async function healthResponse(req, res) {
+  const body = {
+    ok: true,
+    mode: USE_MONGODB ? "mongodb" : "file",
+    paymentsEnabled: Boolean(PAYSTACK_SECRET_KEY),
+    time: new Date().toISOString()
+  };
+  if (!USE_MONGODB) return json(res, 200, body);
+  try {
+    const database = await mongoDb();
+    await database.admin().command({ ping: 1 });
+    return json(res, 200, body);
+  } catch (err) {
+    console.error("Health check DB failure:", err?.message);
+    const { hint, code } = classifyDbError(err);
+    return json(res, 503, { ...body, ok: false, code, hint });
+  }
+}
+
 async function api(req, res, url) {
+  if (url.pathname === "/api/health") return healthResponse(req, res);
   const ip = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "local";
   if (!rateLimit(`ip:${ip}`, 300, 60_000)) return error(res, 429, "Too many requests. Slow down a moment.");
   const db = await loadDb();

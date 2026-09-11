@@ -50,6 +50,9 @@ function applyTheme(theme) {
 }
 document.body.dataset.theme = KNOWN_THEMES.includes(state.theme) ? state.theme : "offkay";
 
+const isDbDown = error => /database connection failed|waking up/i.test(String(error?.message || ""));
+const dbDownMessage = () => "Offkay can't reach its database right now - it usually reconnects within a minute. Refresh in a moment.";
+
 async function request(url, options = {}) {
   const response = await fetch(url, {
     credentials: "same-origin",
@@ -130,8 +133,7 @@ async function bootstrap() {
     console.error("Bootstrap failed:", error);
     populateUniversities();
     showAuth();
-    if (!String(error.message).includes("waking up")) toast(error.message);
-    else toast("Offkay is reconnecting to its database — give it a few seconds and refresh.");
+    toast(isDbDown(error) ? dbDownMessage() : error.message);
   }
 }
 
@@ -1217,7 +1219,7 @@ async function login(event) {
     const values=Object.fromEntries(new FormData(event.currentTarget));
     const data=await request("/api/auth/login",{method:"POST",body:JSON.stringify(values)});
     state.user=data.user;await refreshData(false);enterApp();toast(`Welcome back, ${firstName(state.user.name)}`);
-  } catch(error){toast(error.message)}
+  } catch(error){toast(isDbDown(error) ? dbDownMessage() : error.message)}
   finally{setLoading(button,false)}
 }
 
@@ -1235,7 +1237,7 @@ async function signup(event) {
       if (savedEmail) $("#loginForm [name=email]").value = savedEmail;
       toast("That email is registered. Sign in instead - details pre-filled.");
     } else {
-      toast(error.message);
+      toast(isDbDown(error) ? dbDownMessage() : error.message);
     }
   }
   finally{setLoading(button,false)}
