@@ -211,12 +211,23 @@ function mongoDb() {
 
 async function loadDb() {
   if (!USE_MONGODB) return readDb();
-  let database;
-  try {
-    database = await mongoDb();
-  } catch (err) {
-    console.error("Database unavailable:", err.message);
-    const boom = new Error("The database is waking up. Try again in a few seconds.");
+  let database = null;
+  let lastError = null;
+  for (let attempt = 0; attempt < 2 && !database; attempt++) {
+    if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 800));
+    try {
+      database = await mongoDb();
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (!database) {
+    const reason = String(lastError?.message || lastError?.code || "").toLowerCase();
+    let hint = "In Atlas, open Network Access and allow connections from anywhere (0.0.0.0/0), then refresh.";
+    if (/auth|sasl|illegal|username|password/.test(reason)) hint = "The database username or password in MONGODB_URI is wrong - re-copy the connection string from Atlas.";
+    else if (/srv|querysrv|enotfound|getaddrinfo|dns/.test(reason)) hint = "The cluster hostname could not be resolved - re-copy the connection string from Atlas.";
+    console.error("Database unavailable:", lastError?.message);
+    const boom = new Error(`Database connection failed. ${hint}`);
     boom.status = 503;
     throw boom;
   }

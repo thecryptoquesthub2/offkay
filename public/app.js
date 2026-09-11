@@ -136,7 +136,25 @@ async function bootstrap() {
 }
 
 function populateUniversities() {
-  const FALLBACK_UNIVERSITIES = ["University of Lagos","University of Ibadan","University of Nigeria, Nsukka","Obafemi Awolowo University","Ahmadu Bello University","University of Benin","University of Ilorin","University of Abuja","University of Port Harcourt","Federal University of Technology, Akure","University of Jos","Nnamdi Azikiwe University","Covenant University","Lagos State University","University of Calabar","Bayero University Kano"];
+  const FALLBACK_UNIVERSITIES = [
+    "University of Lagos","University of Ibadan","University of Nigeria, Nsukka",
+    "Obafemi Awolowo University","Ahmadu Bello University","University of Benin",
+    "University of Ilorin","University of Abuja","University of Port Harcourt",
+    "Federal University of Technology, Akure","Federal University of Technology, Minna","Federal University of Technology, Owerri",
+    "University of Jos","University of Calabar","University of Uyo",
+    "Bayero University Kano","Nnamdi Azikiwe University","Usmanu Danfodiyo University",
+    "University of Maiduguri","Federal University Oye-Ekiti","Lagos State University",
+    "Olabisi Onabanjo University","Ekiti State University","Adekunle Ajasin University",
+    "Delta State University","Rivers State University","Ambrose Alli University",
+    "Benue State University","Kaduna State University","Kwara State University",
+    "Covenant University","Babcock University","Afe Babalola University",
+    "Bowen University","Landmark University","American University of Nigeria",
+    "Pan-Atlantic University","Redeemer's University","Lead City University",
+    "Nile University of Nigeria","University of Medical Sciences, Ondo","Federal University of Agriculture, Abeokuta",
+    "Michael Okpara University of Agriculture","Modibbo Adama University","Abubakar Tafawa Balewa University",
+    "Federal University Dutse","Federal University Lafia","Federal University Lokoja",
+    "Federal University Kashere","Alex Ekwueme Federal University"
+  ];
   const list = (state.universities && state.universities.length ? state.universities : FALLBACK_UNIVERSITIES);
   const select = $("#signupUniversity");
   if (select) select.innerHTML = list.map(name => `<option>${esc(name)}</option>`).join("");
