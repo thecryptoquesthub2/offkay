@@ -50,3 +50,7 @@ The repository includes a Vercel serverless adapter for the API. Because serverl
 
 - `MONGODB_URI` — MongoDB Atlas connection string (required for persistence; without it every cold start re-seeds a fresh database)
 - `PAYSTACK_SECRET_KEY` — enables real Paystack checkout (test or live key)
+
+### Health check / DB diagnostics
+
+Open `https://your-vercel-url/api/health` in a browser (or `curl` it). It is public and reveals no secrets: it reports the storage mode, whether payments are enabled, and — if the Atlas connection fails — the exact driver error code (for example `ETIMEDOUT`, `ENOTFOUND`, or `bad auth`) with the matching fix hint. Use it to confirm network access, credentials, and the cluster hostname before retesting sign-in.
