@@ -209,13 +209,23 @@ async function run() {
     const selfConnect = await call(tenant, "POST", "/api/roommates/connect", { userId: demoUser.id });
     check("cannot connect to yourself (404)", selfConnect.status === 404);
 
+    console.log("== people directory ==");
+    const directory = await call(tenant, "GET", "/api/users?q=zainab");
+    check("directory search finds person by name", directory.status === 200 && directory.payload.people.length >= 1 && directory.payload.people.every(p => p.email === undefined && p.phone === undefined));
+    const directoryAll = await call(tenant, "GET", "/api/users");
+    check("directory lists users with privacy-safe fields", directoryAll.status === 200 && directoryAll.payload.people.length >= 2 && directoryAll.payload.people.every(p => p.id && p.name));
+    const startConvo = await call(tenant, "POST", "/api/conversations/start", { userId: target.id });
+    check("start-chat opens conversation", startConvo.status === 200 && startConvo.payload.conversationId);
+    const startAgain = await call(tenant, "POST", "/api/conversations/start", { userId: target.id });
+    check("start-chat is idempotent", startAgain.status === 200 && startAgain.payload.conversationId === startConvo.payload.conversationId);
+
     console.log("== bookings ==");
     const badBooking = await call(tenant, "POST", "/api/bookings", { listingId:"lst_missing", splitCount:2 });
     check("booking missing listing (404)", badBooking.status === 404);
 
     const booking = await call(tenant, "POST", "/api/bookings", { listingId, splitCount:4 });
     check("tenant can create booking (201)", booking.status === 201);
-    check("4-way split computes paymentShare", booking.payload.booking.splitCount === 4 && booking.payload.booking.paymentShare === Math.round(250000/4));
+    check("4-way split computes shares", booking.payload.booking.splitCount === 4 && Array.isArray(booking.payload.booking.paymentShares) && booking.payload.booking.paymentShares.reduce((a,b)=>a+b,0) === 250000 && Math.max(...booking.payload.booking.paymentShares) - Math.min(...booking.payload.booking.paymentShares) <= 1);
 
     const dupBooking = await call(tenant, "POST", "/api/bookings", { listingId, splitCount:2 });
     check("duplicate active booking blocked (409)", dupBooking.status === 409);
@@ -227,9 +237,15 @@ async function run() {
     check("paystack initialize refused without key (503)", initNoKey.status === 503);
 
     const pay = await call(tenant, "POST", `/api/bookings/${booking.payload.booking.id}/confirm-payment`);
-    check("tenant confirms payment", pay.status === 200 && pay.payload.booking.status === "paid" && pay.payload.booking.reference);
+    check("4-way: first share marks paid (1/4, still awaiting)", pay.status === 200 && pay.payload.booking.status === "awaiting_payment" && Array.isArray(pay.payload.booking.paidSlots) && pay.payload.booking.paidSlots.length === 1);
+    const shareInfo = await call(tenant, "POST", `/api/bookings/${booking.payload.booking.id}/share`);
+    check("share links issued for 3 roommates", shareInfo.status === 200 && Array.isArray(shareInfo.payload.links) && shareInfo.payload.links.length === 3 && shareInfo.payload.links.every(link => link.url.includes("slot=")));
+    const dupShare = await call(tenant, "POST", `/api/bookings/${booking.payload.booking.id}/share`);
+    check("share links idempotent", dupShare.status === 200 && dupShare.payload.links.length === 3);
+    const outsiderPay = await call(outsider, "POST", `/api/bookings/${booking.payload.booking.id}/confirm-payment`);
+    check("another user cannot confirm someone else's booking", outsiderPay.status === 404);
     const rePay = await call(tenant, "POST", `/api/bookings/${booking.payload.booking.id}/confirm-payment`);
-    check("re-confirm is idempotent", rePay.status === 200 && rePay.payload.booking.reference === pay.payload.booking.reference);
+    check("demo re-confirm is idempotent (still 1/4)", rePay.status === 200 && rePay.payload.booking.paidSlots.length === 1 && rePay.payload.booking.status === "awaiting_payment");
 
     const initWhenPaid = await call(tenant, "POST", `/api/bookings/${booking.payload.booking.id}/pay/initialize`);
     check("paystack initialize stays unavailable without key (503)", initWhenPaid.status === 503);
@@ -307,7 +323,7 @@ async function run() {
       const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
       check("db file persists seeded users", startsWithDb(db));
       check("deleted user removed from db", !db.users.some(u => u.email === "outsider@example.com"));
-      check("paid booking persisted", db.bookings.some(b => b.status === "paid" && b.reference));
+      check("partially-paid booking persisted with slots", db.bookings.some(b => b.splitCount === 4 && Array.isArray(b.paidSlots) && b.paidSlots.length === 1 && b.status === "awaiting_payment"));
     } else {
       check("db file check skipped (external server)", true);
     }

@@ -24,7 +24,8 @@
       const body = document.getElementById("callbackBody");
       const actions = document.getElementById("callbackActions");
       const params = new URLSearchParams(window.location.search);
-      const reference = params.get("reference") || params.get("trxref");
+      const reference = params.get("reference") || params.get("trxref") || params.get("ref") || "";
+      const slotParam = params.get("slot");
       const bookingMatch = reference ? reference.match(/^OFFKAY-(bkg_[^-]+)-/) : null;
       const finish = (state, heading, text) => {
         icon.innerHTML = state === "success" ? "&#10003;" : state === "pending" ? "&#8987;" : "&#10007;";
@@ -38,15 +39,24 @@
         return finish("error", "We couldn't identify this payment", "The payment reference is missing or invalid. Check your bookings in Profile — if you were charged, verification may still land within a minute.");
       }
       const bookingId = bookingMatch[1];
+      const verifyBody = reference ? { reference } : {};
+      if (slotParam !== null && slotParam !== "") verifyBody.slot = Number(slotParam);
       for (let attempt = 0; attempt < 8; attempt++) {
         try {
-          const response = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/pay/verify`, { method: "POST", credentials: "same-origin" });
+          const response = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/pay/verify`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(verifyBody) });
           const payload = await response.json().catch(() => ({}));
           if (response.ok) {
-            return finish("success", "Payment confirmed", `Your booking is active. Reference: ${payload.booking.reference || reference}. The landlord can see the confirmed booking in Messages.`);
+            const booking = payload.booking || {};
+            const paidSlots = Array.isArray(booking.paidSlots) ? booking.paidSlots.length : null;
+            const splitCount = booking.splitCount || 1;
+            const fullyPaid = booking.status === "paid";
+            if (!fullyPaid && paidSlots !== null && paidSlots < splitCount) {
+              return finish("pending", `Share confirmed — ${paidSlots} of ${splitCount} paid`, `Your share is verified. The booking activates when every roommate's share is confirmed. Check Progress in Profile, and send the invite links if you haven't.`);
+            }
+            return finish("success", "Payment confirmed", `Your booking is active. Reference: ${booking.reference || reference}. The landlord can see the confirmed booking in Messages.`);
           }
           if (response.status === 401) {
-            return finish("error", "Session expired", "Sign in again, then open Profile to resume this payment — your booking is saved.");
+            return finish("error", "Almost done — one more step", `This payment link needs to be opened while signed in. Sign in with your Offkay account, then reopen the link your roommate sent — or check Bookings in Profile.`);
           }
           if (attempt === 7) {
             return finish("pending", "Almost there", payload.error || "The payment hasn't been confirmed yet. Give it a moment, then check your bookings in Profile.");

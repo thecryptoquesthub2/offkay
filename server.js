@@ -88,6 +88,7 @@ function seedDb() {
       {
         id:"lst_palm",ownerId:landlordId,title:"Palm Court Studio",university:"University of Lagos",
         area:"Akoka, Lagos",price:450000,type:"Studio",bedrooms:1,bathrooms:1,
+        latitude:6.5158,longitude:3.3898,
         description:"Bright self-contained studio with steady water, prepaid electricity, security, and an eight-minute walk to campus.",
         amenities:["Steady water","Security","Prepaid meter","Wardrobe"],verified:true,status:"active",
         accent:"emerald",createdAt:now
@@ -95,6 +96,7 @@ function seedDb() {
       {
         id:"lst_maple",ownerId:landlordId,title:"Maple Student Lodge",university:"University of Ibadan",
         area:"Agbowo, Ibadan",price:380000,type:"Shared",bedrooms:2,bathrooms:2,
+        latitude:7.4433,longitude:3.9008,
         description:"A calm two-bedroom apartment designed for two students, close to the main gate and daily transport.",
         amenities:["Furnished","Wi-Fi ready","Fenced compound","Kitchen"],verified:true,status:"active",
         accent:"amber",createdAt:now
@@ -102,6 +104,7 @@ function seedDb() {
       {
         id:"lst_green",ownerId:landlordId,title:"Green Nest En-suite",university:"University of Nigeria, Nsukka",
         area:"Odenigwe, Nsukka",price:520000,type:"En-suite",bedrooms:1,bathrooms:1,
+        latitude:6.8683,longitude:7.4064,
         description:"Private en-suite room in a newly renovated student building with generator backup and caretaker support.",
         amenities:["Generator","Caretaker","Private bathroom","Parking"],verified:true,status:"active",
         accent:"blue",createdAt:now
@@ -109,6 +112,7 @@ function seedDb() {
       {
         id:"lst_cedar",ownerId:landlordId,title:"Cedar House",university:"Obafemi Awolowo University",
         area:"Road 7, Ile-Ife",price:410000,type:"Shared",bedrooms:2,bathrooms:1,
+        latitude:7.5180,longitude:4.5230,
         description:"Spacious shared apartment on a quiet street with direct transport to campus.",
         amenities:["Balcony","Kitchen","Water tank","Security"],verified:true,status:"active",
         accent:"rose",createdAt:now
@@ -166,6 +170,21 @@ function readDb() {
   db.reports ||= [];
   db.verifications ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
+  const demoCoords = { lst_palm:[6.5158,3.3898], lst_maple:[7.4433,3.9008], lst_green:[6.8683,7.4064], lst_cedar:[7.5180,4.5230] };
+  db.listings.forEach(listing => {
+    if (demoCoords[listing.id] && !listing.latitude && !listing.longitude) {
+      [listing.latitude, listing.longitude] = demoCoords[listing.id];
+    }
+  });
+  db.bookings.forEach(booking => {
+    if (!Array.isArray(booking.paymentShares) || booking.paymentShares.length !== booking.splitCount) {
+      const base = Math.floor(booking.amount / booking.splitCount);
+      booking.paymentShares = Array.from({ length: booking.splitCount }, (unused, index) => index === 0 ? booking.amount - base * (booking.splitCount - 1) : base);
+    }
+    booking.paidSlots ||= [];
+    booking.paymentRefs ||= {};
+    booking.shareToken ||= id("shk");
+  });
   return db;
 }
 
@@ -258,6 +277,21 @@ function readDbShape(db) {
   db.reports ||= [];
   db.verifications ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
+  const demoCoords = { lst_palm:[6.5158,3.3898], lst_maple:[7.4433,3.9008], lst_green:[6.8683,7.4064], lst_cedar:[7.5180,4.5230] };
+  db.listings.forEach(listing => {
+    if (demoCoords[listing.id] && !listing.latitude && !listing.longitude) {
+      [listing.latitude, listing.longitude] = demoCoords[listing.id];
+    }
+  });
+  db.bookings.forEach(booking => {
+    if (!Array.isArray(booking.paymentShares) || booking.paymentShares.length !== booking.splitCount) {
+      const base = Math.floor(booking.amount / booking.splitCount);
+      booking.paymentShares = Array.from({ length: booking.splitCount }, (unused, index) => index === 0 ? booking.amount - base * (booking.splitCount - 1) : base);
+    }
+    booking.paidSlots ||= [];
+    booking.paymentRefs ||= {};
+    booking.shareToken ||= id("shk");
+  });
   return db;
 }
 
@@ -488,10 +522,14 @@ async function api(req, res, url) {
         return {...profileView(candidate), score:Math.min(98,62+(sameUniversity?20:0)+(sharedHabits*5)+(budgetClose?6:0))};
       }).sort((a,b)=>b.score-a.score) : [];
     const verification = user ? db.verifications.filter(item => item.userId === user.id).at(-1) || null : null;
+    const people = user ? db.users
+      .filter(item => item.id !== user.id && (item.role === "tenant" || item.hosting === true))
+      .map(item => profileView(item))
+      .sort((a,b) => (a.university === user.university ? -1 : 1) - (b.university === user.university ? -1 : 1)) : [];
     return json(res, 200, {
       user: publicUser(user),
       universities: [...new Set(universities)].sort((a,b)=>a.localeCompare(b)),
-      listings, ownListings, conversations, bookings, inspections, roommateCandidates, verification,
+      listings, ownListings, conversations, bookings, inspections, roommateCandidates, verification, people,
       paymentsEnabled: Boolean(PAYSTACK_SECRET_KEY)
     });
   }
@@ -746,6 +784,43 @@ async function api(req, res, url) {
     return json(res,201,{message});
   }
 
+  if (route === "/api/users" && method === "GET") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const q = String(url.searchParams.get("q") || "").trim().toLowerCase().slice(0, 80);
+    const university = String(url.searchParams.get("university") || "").trim().slice(0, 120);
+    const visible = db.users.filter(item => {
+      if (item.id === account.id) return false;
+      if (!(item.role === "tenant" || item.hosting === true)) return false;
+      if (university && item.university !== university) return false;
+      if (q) {
+        const haystack = `${item.name} ${item.university || ""} ${(item.habits || []).join(" ")}`.toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+      return true;
+    });
+    const people = visible.map(item => {
+      const sameUniversity = item.university === account.university;
+      const sharedHabits = (item.habits || []).filter(habit => (account.habits || []).includes(habit)).length;
+      const budgetClose = account.budget && item.budget ? Math.abs(account.budget-item.budget)<=150000 : false;
+      return {...profileView(item), score:Math.min(98,62+(sameUniversity?20:0)+(sharedHabits*5)+(budgetClose?6:0))};
+    }).sort((a,b)=>b.score-a.score).slice(0, 60);
+    return json(res,200,{people});
+  }
+
+  if (route === "/api/conversations/start" && method === "POST") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const body = await parseBody(req);
+    const candidate = db.users.find(item => item.id === body.userId && (item.role === "tenant" || item.hosting === true));
+    if (!candidate || candidate.id === account.id) return error(res,404,"Student not found");
+    let conversation = db.conversations.find(item => !item.listingId && item.memberIds.includes(account.id) && item.memberIds.includes(candidate.id));
+    if (!conversation) {
+      conversation = {id:id("con"),memberIds:[account.id,candidate.id],listingId:null,updatedAt:new Date().toISOString(),reads:{}};
+      db.conversations.push(conversation);
+    }
+    await persistDb(db);
+    return json(res,200,{conversationId:conversation.id});
+  }
+
   if (route === "/api/roommates" && method === "GET") {
     const account = requireUser(req,res,db); if (!account) return;
     if (account.role !== "tenant") return json(res,200,{matches:[]});
@@ -792,9 +867,12 @@ async function api(req, res, url) {
     const existing = db.bookings.find(item => item.listingId === listing.id && item.tenantId === account.id && (item.status === "awaiting_payment" || item.status === "paid"));
     if (existing) return error(res,409,"You already have an active booking for this property. Check it in your profile.");
     const splitCount = Math.min(4, Math.max(1, Math.round(Number(body.splitCount) || 1)));
+    const base = Math.floor(listing.price / splitCount);
+    const paymentShares = Array.from({ length: splitCount }, (unused, index) => index === 0 ? listing.price - base * (splitCount - 1) : base);
     const booking = {
       id:id("bkg"),listingId:listing.id,tenantId:account.id,ownerId:listing.ownerId,
-      amount:listing.price,platformFee:0,splitCount,paymentShare:Math.round(listing.price/splitCount),
+      amount:listing.price,platformFee:0,splitCount,paymentShares,
+      paymentShare:paymentShares[0],paidSlots:[],paymentRefs:{},shareToken:id("shk"),
       status:"awaiting_payment",createdAt:new Date().toISOString()
     };
     db.bookings.push(booking);
@@ -809,11 +887,31 @@ async function api(req, res, url) {
     if (!booking) return error(res,404,"Booking not found");
     if (booking.status === "paid") return json(res,200,{booking});
     if (PAYSTACK_SECRET_KEY) return error(res,403,"Real payments are enabled - complete checkout on Paystack instead");
-    booking.status = "paid";
-    booking.paidAt = new Date().toISOString();
-    booking.reference = `HH-${Date.now()}`;
+    booking.paidSlots ||= [];
+    if (!booking.paidSlots.includes(0)) booking.paidSlots.push(0);
+    if (booking.paidSlots.length >= booking.splitCount) {
+      booking.status = "paid";
+      booking.paidAt = new Date().toISOString();
+      booking.reference = `HH-${Date.now()}`;
+    }
     await persistDb(db);
     return json(res,200,{booking});
+  }
+
+  const shareMatch = route.match(/^\/api\/bookings\/([^/]+)\/share$/);
+  if (shareMatch && method === "POST") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const booking = db.bookings.find(item => item.id === shareMatch[1] && item.tenantId === account.id);
+    if (!booking) return error(res,404,"Booking not found");
+    if (booking.splitCount <= 1) return error(res,400,"This booking is not split - there are no roommate shares to invite");
+    if (booking.status === "paid") return error(res,409,"This booking is already fully paid");
+    const origin = requestUrl(req);
+    const links = Array.from({ length: booking.splitCount }, (unused, index) => ({
+      slot: index,
+      amount: booking.paymentShares[index],
+      url: `${origin}/payment-callback.html?ref=OFFKAY-${booking.id}-${booking.shareToken}&slot=${index}`
+    }));
+    return json(res,200,{booking,links:links.slice(1)});
   }
 
   const initMatch = route.match(/^\/api\/bookings\/([^/]+)\/pay\/initialize$/);
@@ -823,54 +921,78 @@ async function api(req, res, url) {
     const booking = db.bookings.find(item => item.id === initMatch[1] && item.tenantId === account.id);
     if (!booking) return error(res, 404, "Booking not found");
     if (booking.status === "paid") return error(res, 409, "This booking is already paid");
+    const body = await parseBody(req);
+    const slotRaw = Number(body.slot);
+    const slot = Number.isInteger(slotRaw) && slotRaw >= 0 && slotRaw < booking.splitCount ? slotRaw : 0;
+    booking.paidSlots ||= [];
+    if (booking.paidSlots.includes(slot)) return error(res, 409, "This share has already been paid");
+    const shareAmount = booking.paymentShares[slot];
     const origin = requestUrl(req);
     if (!origin) return error(res, 400, "Cannot determine the request origin");
-    const reference = `OFFKAY-${booking.id}-${Date.now()}`;
+    const reference = `OFFKAY-${booking.id}-${booking.shareToken}-${slot}`;
     const { status, payload } = await paystackFetch("/transaction/initialize", {
       method: "POST",
       body: JSON.stringify({
         email: account.email,
-        amount: booking.amount * 100,
+        amount: shareAmount * 100,
         reference,
         currency: "NGN",
         callback_url: `${origin}/payment-callback.html`,
-        metadata: { bookingId: booking.id, userId: account.id, splitCount: booking.splitCount }
+        metadata: { bookingId: booking.id, userId: account.id, splitCount: booking.splitCount, slot }
       })
     });
     if (!status || !payload?.status || !payload?.data?.authorization_url) {
       console.error("Paystack initialize failed:", payload?.message || payload);
       return error(res, 502, payload?.message || "Paystack rejected the payment request");
     }
-    booking.paymentReference = reference;
+    booking.paymentRefs[slot] = reference;
     booking.paymentStatus = "initializing";
     await persistDb(db);
-    return json(res, 200, { authorizationUrl: payload.data.authorization_url, reference });
+    return json(res, 200, { authorizationUrl: payload.data.authorization_url, reference, slot, amount: shareAmount });
   }
 
   const verifyMatch = route.match(/^\/api\/bookings\/([^/]+)\/pay\/verify$/);
   if (verifyMatch && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
-    const booking = db.bookings.find(item => item.id === verifyMatch[1] && item.tenantId === account.id);
+    const booking = db.bookings.find(item => item.id === verifyMatch[1]);
     if (!booking) return error(res, 404, "Booking not found");
+    const isOwner = booking.tenantId === account.id;
+    const body = await parseBody(req);
+    const reference = typeof body.reference === "string" ? body.reference.slice(0, 200) : "";
+    const slotRaw = Number(body.slot);
+    const slot = Number.isInteger(slotRaw) && slotRaw >= 0 && slotRaw < booking.splitCount ? slotRaw : null;
+    if (!isOwner && !(reference && booking.shareToken && reference.includes(booking.shareToken))) {
+      return error(res, 404, "Booking not found");
+    }
+    booking.paidSlots ||= [];
     if (booking.status === "paid") return json(res, 200, { booking, alreadyPaid: true });
-    if (!booking.paymentReference) return error(res, 400, "No payment was started for this booking");
-    const { status, payload } = await paystackFetch(`/transaction/verify/${encodeURIComponent(booking.paymentReference)}`);
+    const verifySlot = slot !== null && !booking.paidSlots.includes(slot) ? slot
+      : booking.splitCount === 1 && !booking.paidSlots.includes(0) ? 0 : null;
+    if (verifySlot === null) return json(res, 200, { booking, alreadyPaid: booking.paidSlots.length >= booking.splitCount });
+    const expectedRef = booking.paymentRefs?.[verifySlot] || (booking.splitCount === 1 ? booking.paymentReference : null);
+    if (!expectedRef) return error(res, 400, "No payment was started for this share");
+    const { status, payload } = await paystackFetch(`/transaction/verify/${encodeURIComponent(expectedRef)}`);
     const transaction = payload?.data;
     const paid = Boolean(status && payload?.status && transaction?.status === "success");
-    if (paid && transaction.amount !== booking.amount * 100) {
-      console.error("Paystack amount mismatch:", transaction.amount, "expected", booking.amount * 100);
-      return error(res, 400, "Payment amount does not match this booking");
+    if (paid && transaction.amount !== booking.paymentShares[verifySlot] * 100) {
+      console.error("Paystack amount mismatch:", transaction.amount, "expected", booking.paymentShares[verifySlot] * 100);
+      return error(res, 400, "Payment amount does not match this booking share");
     }
     if (!paid) {
       booking.paymentStatus = transaction?.status || "pending";
       await persistDb(db);
       return error(res, 402, "Payment is not complete yet. If you just paid, give it a moment and try again.");
     }
-    booking.status = "paid";
-    booking.paidAt = new Date(transaction.paid_at || Date.now()).toISOString();
-    booking.reference = booking.paymentReference;
-    booking.paystackTransactionId = transaction.id;
+    booking.paidSlots.push(verifySlot);
+    if (!booking.paymentRefs) booking.paymentRefs = {};
+    booking.paymentRefs[verifySlot] = expectedRef;
     booking.paymentStatus = "success";
+    if (booking.paidSlots.length >= booking.splitCount) {
+      booking.status = "paid";
+      booking.paidAt = new Date(transaction.paid_at || Date.now()).toISOString();
+      booking.reference = expectedRef;
+      booking.paystackTransactionId = transaction.id;
+    }
     await persistDb(db);
     return json(res, 200, { booking });
   }
@@ -886,14 +1008,26 @@ async function api(req, res, url) {
     let event = null;
     try { event = JSON.parse(rawBody.toString("utf8")); } catch {}
     if (event?.event === "charge.success" && event?.data?.reference) {
-      const booking = db.bookings.find(item => item.paymentReference === event.data.reference);
-      if (booking && booking.status !== "paid" && event.data.amount === booking.amount * 100) {
-        booking.status = "paid";
-        booking.paidAt = new Date(event.data.paid_at || Date.now()).toISOString();
-        booking.reference = event.data.reference;
-        booking.paystackTransactionId = event.data.id;
-        booking.paymentStatus = "success";
-        await persistDb(db);
+      const refText = String(event.data.reference);
+      const booking = db.bookings.find(item => refText.startsWith(`OFFKAY-${item.id}-`) || item.paymentReference === refText);
+      if (booking) {
+        const slotMatch = refText.match(/-(\d+)$/);
+        const slot = slotMatch ? Number(slotMatch[1]) : 0;
+        const shareAmount = Array.isArray(booking.paymentShares) ? booking.paymentShares[slot] : booking.amount;
+        booking.paidSlots ||= [];
+        if (booking.status !== "paid" && !booking.paidSlots.includes(slot) && event.data.amount === shareAmount * 100) {
+          booking.paidSlots.push(slot);
+          if (!booking.paymentRefs) booking.paymentRefs = {};
+          booking.paymentRefs[slot] = refText;
+          booking.paymentStatus = "success";
+          if (booking.paidSlots.length >= booking.splitCount) {
+            booking.status = "paid";
+            booking.paidAt = new Date(event.data.paid_at || Date.now()).toISOString();
+            booking.reference = refText;
+            booking.paystackTransactionId = event.data.id;
+          }
+          await persistDb(db);
+        }
       }
     }
     return json(res, 200, { received: true });

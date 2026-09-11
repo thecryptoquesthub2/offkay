@@ -6,6 +6,7 @@
   roommateCandidates: [],
   verification: null,
   paymentsEnabled: false,
+  discovery: "",
   conversations: [],
   bookings: [],
   inspections: [],
@@ -28,7 +29,12 @@ const initials = name => String(name || "?").split(/\s+/).map(part => part[0]).j
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[char]));
 const time = iso => new Intl.DateTimeFormat("en-NG",{hour:"numeric",minute:"2-digit"}).format(new Date(iso));
 const firstName = name => String(name || "").split(" ")[0];
-const mapUrl = listing => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${listing.area}, ${listing.university}, Nigeria`)}`;
+const mapUrl = listing => {
+  const hasCoords = Number.isFinite(listing.latitude) && Number.isFinite(listing.longitude) && (listing.latitude || listing.longitude);
+  return hasCoords
+    ? `https://www.openstreetmap.org/?mlat=${listing.latitude}&mlon=${listing.longitude}#map=17/${listing.latitude}/${listing.longitude}`
+    : `https://www.openstreetmap.org/search?query=${encodeURIComponent(`${listing.area || ""}, ${listing.university || ""}, Nigeria`.replace(/^,\s+|,\s+$/g,""))}`;
+};
 const icon = name => `<svg class="off-icon" aria-hidden="true"><use href="/offkay-icons.svg#${name}"></use></svg>`;
 const canHost = () => state.user?.role === "landlord" || state.user?.hosting === true;
 const inHostView = () => canHost() && state.hostView;
@@ -51,7 +57,15 @@ async function request(url, options = {}) {
     ...options
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || "Something went wrong");
+  if (!response.ok) {
+    if (response.status === 401 && state.user) {
+      state.user = null;
+      try { localStorage.removeItem("offkay-theme"); } catch {}
+      showAuth();
+      toast("Your session expired - please sign in again");
+    }
+    throw new Error(payload.error || "Something went wrong");
+  }
   return payload;
 }
 
@@ -330,13 +344,32 @@ function renderExplore() {
   `;
 }
 
+function listingCoords(item) {
+  const lat = Number(item.latitude), lng = Number(item.longitude);
+  return Number.isFinite(lat) && Number.isFinite(lng) && (lat || lng) ? {lat,lng} : null;
+}
+
+function osmEmbed(item, height) {
+  const coords = listingCoords(item);
+  if (!coords) return "";
+  const {lat,lng} = coords;
+  const delta = 0.004;
+  return `<iframe class="osm-embed" style="height:${height}px" title="Map of ${esc(item.title)}" src="https://www.openstreetmap.org/export/embed.html?bbox=${lng-delta}%2C${lat-delta}%2C${lng+delta}%2C${lat+delta}&layer=mapnik&marker=${lat}%2C${lng}" loading="lazy"></iframe>`;
+}
+
 function mapCanvas(items) {
-  if (!items.length) return emptyState("No homes on this map","Try another area or filter.");
-  return `<div class="map-canvas" aria-label="Approximate listing map">${items.map((item,index)=>{
-    const left = 18 + ((index * 29) % 64);
-    const top = 22 + ((index * 37) % 58);
-    return `<button class="map-marker" style="left:${left}%;top:${top}%" data-action="view-listing" data-id="${item.id}" aria-label="Open ${esc(item.title)}">${index+1}</button>`;
-  }).join("")}<div class="map-key">Approximate locations for safety · tap a pin for the home</div></div>`;
+  const withCoords = items.filter(item => listingCoords(item));
+  if (!withCoords.length) {
+    return emptyState("Map coming for these homes","Landlords haven't added map coordinates yet. Use the Homes tab to browse, or open a listing and tap View on map.");
+  }
+  return `<div class="map-stack">${withCoords.map(item => `
+    <div class="map-card glass">
+      ${osmEmbed(item, 240) || `<div class="map-placeholder">No map pin yet</div>`}
+      <div class="map-card-info">
+        <div><b>${esc(item.title)}</b><span>${esc(item.area)} · ${money(item.price)}</span></div>
+        <button class="button subtle small" data-action="view-listing" data-id="${item.id}">Open home</button>
+      </div>
+    </div>`).join("")}</div>`;
 }
 
 function conversationRow(conversation) {
@@ -348,17 +381,48 @@ function conversationRow(conversation) {
   </button>`;
 }
 
+function personRow(person) {
+  return `<div class="person-row">
+    <button class="person-main" data-action="view-roommate" data-id="${person.id}">
+      <span class="avatar">${initials(person.name)}</span>
+      <span class="conversation-text"><b>${esc(person.name)}</b><span>${esc(person.university || "Offkay")}${person.bio ? ` · ${esc(person.bio.slice(0,60))}${person.bio.length>60?"…":""}` : ""}</span></span>
+    </button>
+    <button class="button subtle small" data-action="start-chat" data-id="${person.id}">Message</button>
+  </div>`;
+}
+
 function renderMessages() {
   const current = state.conversations.find(item=>item.id===state.activeConversation);
+  const query = String(state.discovery || "").trim().toLowerCase();
+  const directory = (state.people || []).filter(person => {
+    if (!query) return true;
+    const haystack = `${person.name} ${person.university || ""} ${(person.habits || []).join(" ")}`.toLowerCase();
+    return haystack.includes(query);
+  });
   $("#tab-messages").innerHTML = `
     <div class="message-shell glass ${current?"chat-open":""}">
       <aside class="conversation-list">
         <h2>Messages</h2>
         <input class="conversation-search" id="conversationSearch" placeholder="Search conversations...">
-        <div id="conversationRows">${state.conversations.map(conversationRow).join("") || emptyState("No messages yet","Contact a landlord or roommate to begin a conversation.")}</div>
+        <div id="conversationRows">${state.conversations.map(conversationRow).join("") || `<div class="no-conv-hint">No chats yet — find someone below to start one.</div>`}</div>
+        <div class="discover-block">
+          <h3>Find people</h3>
+          <input class="conversation-search" id="peopleSearch" placeholder="Search students &amp; landlords..." value="${esc(state.discovery || "")}">
+          <div id="peopleRows">${directory.slice(0,12).map(personRow).join("") || `<div class="no-conv-hint">No one matches yet. Try a different name or school.</div>`}</div>
+        </div>
       </aside>
       ${current ? chatMarkup(current) : `<div class="no-chat"><div><div class="empty-icon">&#9676;</div><b>Select a conversation</b><p>Your messages will appear here.</p></div></div>`}
     </div>`;
+  const peopleSearch = $("#peopleSearch");
+  if (peopleSearch) peopleSearch.addEventListener("input", event => {
+    state.discovery = event.target.value;
+    const q = String(state.discovery).trim().toLowerCase();
+    const filtered = (state.people || []).filter(person => {
+      if (!q) return true;
+      return `${person.name} ${person.university || ""} ${(person.habits || []).join(" ")}`.toLowerCase().includes(q);
+    });
+    $("#peopleRows").innerHTML = filtered.slice(0,12).map(personRow).join("") || `<div class="no-conv-hint">No one matches yet.</div>`;
+  });
   if (current) loadMessages(current.id);
   else setChatPolling(null);
 }
@@ -442,7 +506,7 @@ function renderProfile() {
       <aside class="profile-card glass">
         <span class="avatar large">${initials(state.user.name)}</span>
         <h2>${esc(state.user.name)}</h2><p>${esc(state.user.email)}</p>
-        <span class="verified-line">${state.user.verified?"&#10003; Identity verified":"&#9676; Verification pending"}</span>
+        ${state.user ? `<span class="verified-line">${state.user.verified?"&#10003; Identity verified":"&#9676; Verification pending"}</span>` : `<span class="verified-line">Signed out</span><button class="button primary small" data-action="goto-auth">Sign in</button>`}
         <div class="profile-stats">
           <div class="profile-stat"><b>${tenant?state.listings.filter(item=>item.saved).length:mine}</b><span>${tenant?"SAVED HOMES":"PROPERTIES"}</span></div>
           <div class="profile-stat"><b>${paid}</b><span>CONFIRMED</span></div>
@@ -472,11 +536,23 @@ function bookingsList() {
   if (!state.bookings.length) return emptyState("No bookings yet","Choose a home and use Book &amp; split rent to create your first booking.");
   return `<div class="settings-stack booking-stack">${state.bookings.map(booking=>{
     const isTenant = booking.tenantId === state.user.id;
-    const share = booking.paymentShare || Math.round(booking.amount / (booking.splitCount || 1));
+    const shares = Array.isArray(booking.paymentShares) && booking.paymentShares.length === booking.splitCount
+      ? booking.paymentShares
+      : Array.from({length:booking.splitCount},(u,i)=>i===0?booking.amount-Math.floor(booking.amount/booking.splitCount)*(booking.splitCount-1):Math.floor(booking.amount/booking.splitCount));
+    const paidSlots = Array.isArray(booking.paidSlots) ? booking.paidSlots : [];
+    const myShare = shares[0] ?? booking.amount;
+    const paidCount = paidSlots.length;
+    const fullyPaid = booking.status === "paid";
+    const statusText = fullyPaid ? "paid"
+      : booking.splitCount > 1 ? `${paidCount}/${booking.splitCount} shares paid`
+      : "awaiting payment";
+    const actions = [];
+    if (isTenant && !fullyPaid && !paidSlots.includes(0)) actions.push(`<button class="button primary small" data-action="resume-payment" data-id="${booking.id}">Pay my share ${money(myShare)}</button>`);
+    if (isTenant && booking.splitCount > 1 && !fullyPaid && state.paymentsEnabled) actions.push(`<button class="button subtle small" data-action="share-links" data-id="${booking.id}">Invite roommates</button>`);
     return `<div class="settings-row booking-row">
       <span class="metric-icon">${icon("home")}</span>
-      <span><b>${esc(booking.propertyTitle || "Property")}</b><small>${isTenant?`Your share ${money(share)} · ${booking.splitCount>1?`split ${booking.splitCount} ways`:"solo"} · ${booking.status.replace(/_/g," ")}`:`${esc(booking.tenantName || "Student")} · ${money(booking.amount)} · ${booking.status.replace(/_/g," ")}`}</small></span>
-      ${isTenant && booking.status === "awaiting_payment" ? `<button class="button primary small" data-action="resume-payment" data-id="${booking.id}">Pay now</button>` : `<em>${booking.status === "paid" ? "&#10003; Paid" : ""}</em>`}
+      <span><b>${esc(booking.propertyTitle || "Property")}</b><small>${isTenant?`Your share ${money(myShare)} · ${booking.splitCount>1?`split ${booking.splitCount} ways`:"solo"} · ${statusText}`:`${esc(booking.tenantName || "Student")} · ${money(booking.amount)} · ${booking.status.replace(/_/g," ")}`}</small></span>
+      ${fullyPaid ? `<em>&#10003; Paid</em>` : actions.join(" ") || `<em>${booking.status.replace(/_/g," ")}</em>`}
     </div>`;
   }).join("")}</div>`;
 }
@@ -663,7 +739,7 @@ function openListing(id) {
         <button class="report-link" data-action="open-inspections">See inspection requests</button>`
         : `
         <div class="detail-actions">
-          <a class="button subtle" href="${mapUrl(item)}" target="_blank" rel="noreferrer">View on map</a>
+          <button class="button subtle" data-action="open-map" data-id="${item.id}">View on map</button>
           <button class="button subtle" data-action="contact-landlord" data-id="${item.id}">Message</button>
           <button class="button primary" data-action="open-inspection" data-id="${item.id}">Request inspection</button>
           <button class="button primary" data-action="start-booking" data-id="${item.id}">Book &amp; split rent</button>
@@ -671,6 +747,28 @@ function openListing(id) {
         <button class="report-link" data-action="open-report" data-id="${item.id}">Report a concern</button>`}
       </div>
     </div>`,true);
+}
+
+function openMap(id) {
+  const item = state.listings.find(listing=>listing.id===id) || state.ownListings.find(listing=>listing.id===id);
+  if (!item) return;
+  const coords = listingCoords(item);
+  modal(`
+    <div class="modal-head"><div><h2>${esc(item.title)}</h2><p>${esc(item.area)} · ${esc(item.university)}</p></div><button class="close-button">&times;</button></div>
+    ${coords ? osmEmbed(item, 320) : `<div class="payment-note">This home has no map pin yet. Approximate location: ${esc(item.area)}.</div>`}
+    <a class="button subtle wide" href="${mapUrl(item)}" target="_blank" rel="noreferrer">Open in OpenStreetMap ${coords ? "with exact pin" : "search"} &rarr;</a>
+    <p class="share-hint">${coords ? "Pin shows the real neighborhood. The exact address is shared after booking." : "Pin the exact spot when editing the listing (latitude/longitude fields)."}</p>
+  `, true);
+}
+
+async function startChat(id) {
+  try {
+    const data = await request("/api/conversations/start",{method:"POST",body:JSON.stringify({userId:id})});
+    await refreshData();
+    state.activeConversation = data.conversationId;
+    switchTab("messages");
+    toast("Conversation started");
+  } catch(error) { toast(error.message); }
 }
 
 function fileToDataUrl(file) {
@@ -805,19 +903,34 @@ async function contactLandlord(id) {
   } catch(error) { toast(error.message); }
 }
 
+function shareRows(price, splitCount) {
+  if (splitCount <= 1) return "";
+  const base = Math.floor(price / splitCount);
+  const shares = Array.from({ length: splitCount }, (unused, index) => index === 0 ? price - base * (splitCount - 1) : base);
+  return `<div class="share-breakdown">${shares.map((amount, index) => `
+    <div class="cost-row share-row"><span>${index === 0 ? "Your share" : `Roommate ${index}`}</span><b>${money(amount)}</b></div>`).join("")}
+    <div class="share-hint">Each roommate pays their own share. After your payment, you'll get invite links to send them.</div>
+  </div>`;
+}
+
 function startBooking(id) {
   const item = state.listings.find(listing=>listing.id===id);
   if (!item) return;
+  const breakdown = () => shareRows(item.price, Number(document.querySelector("input[name=splitCount]:checked")?.value || 1));
   modal(`
     <div class="modal-head"><div><h2>Secure your space</h2><p>Review the booking before continuing to payment.</p></div><button class="close-button">&times;</button></div>
     <div class="checkout-card"><div class="checkout-thumb"></div><div><b>${esc(item.title)}</b><span>${esc(item.area)} &middot; ${esc(item.university)}</span><span style="color:var(--green);font-weight:800">&#10003; Property and owner reviewed</span></div></div>
     <div class="cost-row"><span>Annual rent</span><b>${money(item.price)}</b></div>
     <fieldset class="segmented split-segment"><legend>How would you like to pay?</legend><label><input type="radio" name="splitCount" value="1" checked><span>Pay alone</span></label><label><input type="radio" name="splitCount" value="2"><span>Split 2 ways</span></label><label><input type="radio" name="splitCount" value="3"><span>Split 3 ways</span></label><label><input type="radio" name="splitCount" value="4"><span>Split 4 ways</span></label></fieldset>
+    <div id="shareBreakdown">${breakdown()}</div>
     <div class="cost-row"><span>Offkay fee</span><b>&#8358;0 launch offer</b></div>
     <div class="cost-row"><span>Payment protection</span><b>Included</b></div>
     <div class="cost-row total"><span>Total</span><span>${money(item.price)}</span></div>
-    <div class="payment-note">You'll complete checkout on Paystack's secure page and return here for automatic verification. Your booking activates only after the payment is confirmed server-side.</div>
+    <div class="payment-note">You'll complete checkout on Paystack's secure page and return here for automatic verification. Your booking activates once every share is confirmed server-side.</div>
     <button class="button primary wide" id="createBooking" data-id="${item.id}">Continue to secure payment &rarr;</button>`, state.paymentsEnabled);
+  document.querySelectorAll("input[name=splitCount]").forEach(radio => radio.addEventListener("change", () => {
+    $("#shareBreakdown").innerHTML = breakdown();
+  }));
   $("#createBooking").onclick = createBooking;
 }
 
@@ -830,10 +943,10 @@ async function createBooking(event) {
   } catch(error) { toast(error.message); setLoading(button,false); }
 }
 
-function payBooking(booking, button) {
+function payBooking(booking, button, slot = 0) {
   if (button) setLoading(button,true,"Opening secure checkout...");
   if (state.paymentsEnabled) {
-    request(`/api/bookings/${booking.id}/pay/initialize`,{method:"POST"})
+    request(`/api/bookings/${booking.id}/pay/initialize`,{method:"POST",body:JSON.stringify({slot})})
       .then(data => { window.location.href = data.authorizationUrl; })
       .catch(error => { toast(error.message); if (button) setLoading(button,false); });
     return;
@@ -844,7 +957,31 @@ function payBooking(booking, button) {
 function resumePayment(id) {
   const booking = state.bookings.find(item => item.id === id);
   if (!booking) return toast("Booking not found");
-  payBooking(booking);
+  const nextSlot = Array.isArray(booking.paidSlots) ? [0,1,2,3].find(index => index < booking.splitCount && !booking.paidSlots.includes(index)) : 0;
+  if (nextSlot === undefined && booking.status !== "paid") return toast("All shares are processing - verification lands shortly");
+  payBooking(booking, null, nextSlot ?? 0);
+}
+
+async function shareLinks(id) {
+  try {
+    const data = await request(`/api/bookings/${id}/share`,{method:"POST"});
+    const links = data.links || [];
+    if (!links.length) return toast("No roommate shares on this booking");
+    modal(`
+      <div class="modal-head"><div><h2>Invite your roommates</h2><p>Each person pays their own share directly to this booking.</p></div><button class="close-button">&times;</button></div>
+      <div class="share-links">${links.map(link => `
+        <div class="share-link-row">
+          <div><b>Roommate ${link.slot}</b><span>${money(link.amount)}</span></div>
+          <input class="share-link-input" readonly value="${esc(link.url)}">
+          <button class="button subtle small" data-copy-link="${esc(link.url)}">Copy</button>
+        </div>`).join("")}
+      </div>
+      <div class="payment-note">Send each link to a roommate. When they pay, the share is verified and marked here automatically.</div>
+      <button class="button primary wide" data-action="close-modal">Done</button>`);
+    document.querySelectorAll("[data-copy-link]").forEach(button => button.addEventListener("click", () => {
+      navigator.clipboard?.writeText(button.dataset.copyLink).then(() => toast("Link copied")).catch(() => toast("Copy failed - long-press the link instead"));
+    }));
+  } catch(error) { toast(error.message); }
 }
 
 function showPayment(booking) {
@@ -962,6 +1099,11 @@ function bindEvents() {
     if (action==="do-logout") doLogout();
     if (action==="confirm-delete-account") confirmDeleteAccount();
     if (action==="resume-payment") resumePayment(id);
+    if (action==="share-links") shareLinks(id);
+    if (action==="open-map") openMap(id);
+    if (action==="start-chat") startChat(id);
+    if (action==="refresh-bookings") { refreshData().then(()=>{enterApp();switchTab("profile");}); }
+    if (action==="goto-auth") showAuth();
     if (action==="switch-view") {
       state.hostView = !state.hostView;
       localStorage.setItem("offkay-host-view", String(state.hostView));
