@@ -411,7 +411,7 @@ function renderMessages() {
           <div id="peopleRows">${directory.slice(0,12).map(personRow).join("") || `<div class="no-conv-hint">No one matches yet. Try a different name or school.</div>`}</div>
         </div>
       </aside>
-      ${current ? chatMarkup(current) : `<div class="no-chat"><div><div class="empty-icon">&#9676;</div><b>Select a conversation</b><p>Your messages will appear here.</p></div></div>`}
+      ${current ? chatMarkup(current) : `<div class="no-chat"><div><div class="empty-icon">${icon("messages")}</div><b>Select a conversation</b><p>Your messages will appear here.</p></div></div>`}
     </div>`;
   const peopleSearch = $("#peopleSearch");
   if (peopleSearch) peopleSearch.addEventListener("input", event => {
