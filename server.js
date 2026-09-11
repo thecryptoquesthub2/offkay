@@ -169,6 +169,57 @@ function readDb() {
   return db;
 }
 
+// Persistence layer. On Vercel the filesystem is ephemeral, so when MONGODB_URI
+// is set the whole app state lives in one MongoDB document instead of db.json.
+const USE_MONGODB = Boolean(process.env.MONGODB_URI);
+
+let mongoCollectionPromise = null;
+function mongoCollection() {
+  if (!mongoCollectionPromise) {
+    const { MongoClient } = require("mongodb");
+    mongoCollectionPromise = new MongoClient(process.env.MONGODB_URI, { maxPoolSize: 5 }).connect()
+      .then(client => client.db(process.env.MONGODB_DB || "offkay").collection("appstate"));
+  }
+  return mongoCollectionPromise;
+}
+
+async function loadDb() {
+  if (!USE_MONGODB) return readDb();
+  const collection = await mongoCollection();
+  const stored = await collection.findOne({ _id: "appstate" });
+  if (stored) {
+    const db = { ...stored };
+    delete db._id;
+    return readDbShape(db);
+  }
+  return readDbShape(seedDb());
+}
+
+async function persistDb(db) {
+  if (!USE_MONGODB) {
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    return;
+  }
+  const collection = await mongoCollection();
+  const { _id, ...state } = db;
+  await collection.replaceOne({ _id: "appstate" }, { _id: "appstate", ...state }, { upsert: true });
+}
+
+function readDbShape(db) {
+  db.users ||= [];
+  db.sessions ||= [];
+  db.listings ||= [];
+  db.saved ||= [];
+  db.conversations ||= [];
+  db.messages ||= [];
+  db.bookings ||= [];
+  db.inspections ||= [];
+  db.reports ||= [];
+  db.verifications ||= [];
+  db.conversations.forEach(conversation => { conversation.reads ||= {}; });
+  return db;
+}
+
 // All API requests are serialized through one queue so every read-modify-write
 // is atomic. This prevents the duplicate-account race on concurrent signups.
 let apiChain = Promise.resolve();
@@ -334,7 +385,7 @@ function paystackWebhookSignatureValid(req, rawBody) {
 }
 
 async function api(req, res, url) {
-  const db = readDb();
+  const db = await loadDb();
   const user = currentUser(req, db);
   const method = req.method;
   const route = url.pathname;
@@ -391,7 +442,7 @@ async function api(req, res, url) {
     const token = id("ses");
     db.sessions.push({token,userId:newUser.id,expiresAt:Date.now()+SESSION_TTL});
     await new Promise(resolve => setTimeout(resolve, 0));
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res, 201, {user:publicUser(newUser)}, {"Set-Cookie":sessionCookie(req, token, 2592000)});
   }
 
@@ -401,21 +452,21 @@ async function api(req, res, url) {
     if (!account || !verifyPassword(body.password, account.password)) return error(res, 401, "Email or password is incorrect");
     const token = id("ses");
     db.sessions.push({token,userId:account.id,expiresAt:Date.now()+SESSION_TTL});
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res, 200, {user:publicUser(account)}, {"Set-Cookie":sessionCookie(req, token, 2592000)});
   }
 
   if (route === "/api/auth/logout" && method === "POST") {
     const token = parseCookies(req).ch_session;
     db.sessions = db.sessions.filter(item => item.token !== token);
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res, 200, {ok:true}, {"Set-Cookie":sessionCookie(req, "", 0)});
   }
 
   if (route === "/api/auth/logout-all" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
     db.sessions = db.sessions.filter(item => item.userId !== account.id);
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res, 200, {ok:true}, {"Set-Cookie":sessionCookie(req, "", 0)});
   }
 
@@ -426,7 +477,7 @@ async function api(req, res, url) {
       return error(res, 403, "Enter your password to confirm account deletion");
     }
     removeUserFromDb(db, account.id);
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res, 200, {ok:true}, {"Set-Cookie":sessionCookie(req, "", 0)});
   }
 
@@ -438,7 +489,7 @@ async function api(req, res, url) {
     });
     if (body.budget !== undefined) account.budget = Math.max(0, Number(body.budget) || 0);
     if (Array.isArray(body.habits)) account.habits = body.habits.slice(0,8).map(String);
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res, 200, {user:publicUser(account)});
   }
 
@@ -446,7 +497,7 @@ async function api(req, res, url) {
     const account = requireUser(req,res,db); if (!account) return;
     account.hosting = true;
     account.hostActivatedAt = new Date().toISOString();
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res, 200, {user:publicUser(account)});
   }
 
@@ -463,7 +514,7 @@ async function api(req, res, url) {
     };
     db.verifications.push(verification);
     account.verificationStatus = "manual_review";
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,201,{verification,user:publicUser(account)});
   }
 
@@ -490,7 +541,7 @@ async function api(req, res, url) {
       createdAt:new Date().toISOString()
     };
     db.listings.unshift(listing);
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,201,{listing:listingPayload(listing,db,account)});
   }
 
@@ -511,7 +562,7 @@ async function api(req, res, url) {
     ["price","bedrooms","bathrooms","latitude","longitude"].forEach(key => {
       if (body[key] !== undefined) listing[key] = Number(body[key]);
     });
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,200,{listing:listingPayload(listing,db,account)});
   }
 
@@ -522,7 +573,7 @@ async function api(req, res, url) {
     if (listing.ownerId !== account.id) return error(res,403,"You cannot delete this property");
     db.listings = db.listings.filter(item => item.id !== listing.id);
     db.saved = db.saved.filter(item => item.listingId !== listing.id);
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,200,{ok:true});
   }
 
@@ -543,7 +594,7 @@ async function api(req, res, url) {
       status:"requested",createdAt:new Date().toISOString()
     };
     db.inspections.push(inspection);
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,201,{inspection});
   }
 
@@ -561,7 +612,7 @@ async function api(req, res, url) {
       status:"received",createdAt:new Date().toISOString()
     };
     db.reports.push(report);
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,201,{report});
   }
 
@@ -572,7 +623,7 @@ async function api(req, res, url) {
     if (!listing) return error(res,404,"Property not found");
     const index = db.saved.findIndex(item => item.userId === account.id && item.listingId === saveMatch[1]);
     if (index >= 0) db.saved.splice(index,1); else db.saved.push({userId:account.id,listingId:saveMatch[1]});
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,200,{saved:index<0});
   }
 
@@ -588,7 +639,7 @@ async function api(req, res, url) {
       db.conversations.push(conversation);
       db.messages.push({id:id("msg"),conversationId:conversation.id,senderId:account.id,text:`Hi, I am interested in ${listing.title}. Is it still available?`,createdAt:new Date().toISOString()});
     }
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,200,{conversationId:conversation.id});
   }
 
@@ -599,7 +650,7 @@ async function api(req, res, url) {
     if (!conversation) return error(res,404,"Conversation not found");
     const messages = db.messages.filter(item => item.conversationId === conversation.id).sort((a,b) => a.createdAt.localeCompare(b.createdAt));
     conversation.reads[account.id] = new Date().toISOString();
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,200,{conversation:conversationPayload(conversation, db, account.id),messages});
   }
   if (messagesMatch && method === "POST") {
@@ -613,7 +664,7 @@ async function api(req, res, url) {
     db.messages.push(message);
     conversation.updatedAt = message.createdAt;
     conversation.reads[account.id] = message.createdAt;
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,201,{message});
   }
 
@@ -640,7 +691,7 @@ async function api(req, res, url) {
       db.conversations.push(conversation);
       db.messages.push({id:id("msg"),conversationId:conversation.id,senderId:account.id,text:"Hi! Offkay matched us as potential roommates. Would you like to chat?",createdAt:new Date().toISOString()});
     }
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,200,{conversationId:conversation.id});
   }
 
@@ -668,7 +719,7 @@ async function api(req, res, url) {
       status:"awaiting_payment",createdAt:new Date().toISOString()
     };
     db.bookings.push(booking);
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,201,{booking});
   }
 
@@ -682,7 +733,7 @@ async function api(req, res, url) {
     booking.status = "paid";
     booking.paidAt = new Date().toISOString();
     booking.reference = `HH-${Date.now()}`;
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res,200,{booking});
   }
 
@@ -713,7 +764,7 @@ async function api(req, res, url) {
     }
     booking.paymentReference = reference;
     booking.paymentStatus = "initializing";
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res, 200, { authorizationUrl: payload.data.authorization_url, reference });
   }
 
@@ -733,7 +784,7 @@ async function api(req, res, url) {
     }
     if (!paid) {
       booking.paymentStatus = transaction?.status || "pending";
-      await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+      await persistDb(db);
       return error(res, 402, "Payment is not complete yet. If you just paid, give it a moment and try again.");
     }
     booking.status = "paid";
@@ -741,7 +792,7 @@ async function api(req, res, url) {
     booking.reference = booking.paymentReference;
     booking.paystackTransactionId = transaction.id;
     booking.paymentStatus = "success";
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    await persistDb(db);
     return json(res, 200, { booking });
   }
 
@@ -760,7 +811,7 @@ async function api(req, res, url) {
         booking.reference = event.data.reference;
         booking.paystackTransactionId = event.data.id;
         booking.paymentStatus = "success";
-        await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+        await persistDb(db);
       }
     }
     return json(res, 200, { received: true });
