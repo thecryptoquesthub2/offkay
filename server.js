@@ -209,20 +209,46 @@ function mongoDb() {
   return mongoDbPromise;
 }
 
+// Static checks on the connection string that catch common copy-paste
+// mistakes instantly, without connecting and without exposing the value.
+function lintMongoUri(uri) {
+  if (/<(db_)?(password|username)>/i.test(uri)) {
+    return { code: "placeholder-credentials", hint: "The connection string still contains a <password> or <username> placeholder - replace it with your real database credentials (without the angle brackets)." };
+  }
+  if (/^["'`]|["'`]\s*$|^\s+|\s+$/.test(uri)) {
+    return { code: "quoting", hint: "MONGODB_URI has stray quotes or spaces around it - in Vercel > Settings > Environment Variables, save the value with nothing before mongodb+srv:// or after the last character." };
+  }
+  if (!/^mongodb(\+srv)?:\/\//i.test(uri.trim())) {
+    return { code: "invalid scheme", hint: "MONGODB_URI must start with mongodb+srv:// - re-copy it from Atlas > Connect > Drivers." };
+  }
+  if (/[\r\n]|\s{2,}/.test(uri.trim())) {
+    return { code: "line-break in uri", hint: "The connection string contains a line break or double space - paste it as one unbroken line." };
+  }
+  return null;
+}
+
 // Maps a Mongo driver failure to { code, hint } — user-facing diagnostics
 // without ever leaking credentials or connection-string details.
 function classifyDbError(lastError) {
   const reason = String(lastError?.message || lastError?.code || "").toLowerCase();
   let hint = "In Atlas, open Network Access and allow connections from anywhere (0.0.0.0/0), then refresh.";
-  if (/auth|sasl|illegal|username|password/.test(reason)) hint = "The database username or password in MONGODB_URI is wrong - re-copy the connection string from Atlas.";
+  if (/must be uri|uri encoded/.test(reason)) hint = "Your database password contains special characters like @ or : - re-copy the connection string from Atlas > Connect > Drivers so it arrives pre-escaped.";
+  else if (/parseerror|invalid connection string/.test(reason)) hint = "MONGODB_URI could not be parsed - re-copy it from Atlas > Connect > Drivers on one line, no quotes or spaces around it.";
+  else if (/auth|sasl|illegal|username|password/.test(reason)) hint = "The database username or password in MONGODB_URI is wrong - re-copy the connection string from Atlas.";
   else if (/srv|querysrv|enotfound|getaddrinfo|dns/.test(reason)) hint = "The cluster hostname could not be resolved - re-copy the connection string from Atlas.";
-  const codeMatch = String([lastError?.code, lastError?.codeName, lastError?.message].filter(Boolean).join(" ")).match(/(querySrv \w+|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|ESERVFAIL|authentication failed|bad auth|illegal scheme|invalid scheme|tlsv\d+|SSL[ \w]+|connection closed|timed out)/i);
+  const codeMatch = String([lastError?.code, lastError?.codeName, lastError?.message].filter(Boolean).join(" ")).match(/(querySrv \w+|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|ESERVFAIL|authentication failed|bad auth|illegal scheme|invalid scheme|MongoParseError|invalid connection string|must be URI encoded|tlsv\d+|SSL[ \w]+|connection closed|timed out)/i);
   const code = String(lastError?.codeName || lastError?.code || (codeMatch && codeMatch[0]) || "unknown").slice(0, 48);
   return { hint, code };
 }
 
 async function loadDb() {
   if (!USE_MONGODB) return readDb();
+  const lint = lintMongoUri(process.env.MONGODB_URI);
+  if (lint) {
+    const boom = new Error(`Database connection failed. ${lint.hint} [code: ${lint.code}]`);
+    boom.status = 503;
+    throw boom;
+  }
   let database = null;
   let lastError = null;
   for (let attempt = 0; attempt < 2 && !database; attempt++) {
@@ -543,6 +569,8 @@ async function healthResponse(req, res) {
     time: new Date().toISOString()
   };
   if (!USE_MONGODB) return json(res, 200, body);
+  const lint = lintMongoUri(process.env.MONGODB_URI);
+  if (lint) return json(res, 503, { ...body, ok: false, code: lint.code, hint: lint.hint });
   try {
     const database = await mongoDb();
     await database.admin().command({ ping: 1 });

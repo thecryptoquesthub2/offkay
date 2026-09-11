@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Integration check for the /api/health diagnostic route. Boots a disposable
-// server on an isolated temp database and probes health, unknown routes, and
-// the demo login path. Usage: node scripts/health-test.js
+// Integration check for the /api/health diagnostic route. Boots disposable
+// servers on isolated temp storage: one healthy file-mode server, then one
+// configured with a placeholder MONGODB_URI to prove the URI lint reports
+// the exact copy-paste mistake. Usage: node scripts/health-test.js
 "use strict";
 
 const { spawn } = require("node:child_process");
@@ -10,25 +11,32 @@ const path = require("node:path");
 const fs = require("node:fs");
 
 const PORT = 4599;
+const LINT_PORT = 4598;
 const BASE = `http://127.0.0.1:${PORT}`;
+const LINT_BASE = `http://127.0.0.1:${LINT_PORT}`;
 
-async function run() {
+function bootServer(port, extraEnv = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "offkay-health-"));
-  const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "" },
+  return spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
+    env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "", ...extraEnv },
     stdio: ["ignore", "ignore", "ignore"]
   });
-  const bail = (message) => {
-    proc.kill("SIGKILL");
-    console.error(`  FAIL ${message}`);
-    process.exit(1);
-  };
+}
+
+async function waitReady(base, proc, label) {
+  for (let i = 0; i < 50; i++) {
+    try { await fetch(`${base}/api/health`); return; } catch {}
+    await new Promise(resolve => setTimeout(resolve, 100));
+    if (i === 49) { proc.kill("SIGKILL"); throw new Error(`${label} did not start`); }
+  }
+}
+
+async function run() {
+  // Phase 1: healthy file-mode server.
+  const proc = bootServer(PORT);
+  const bail = (message) => { proc.kill("SIGKILL"); console.error(`  FAIL ${message}`); process.exit(1); };
   try {
-    for (let i = 0; i < 50; i++) {
-      try { if ((await fetch(`${BASE}/api/bootstrap`)).ok) break; } catch {}
-      await new Promise(resolve => setTimeout(resolve, 100));
-      if (i === 49) bail("server did not start");
-    }
+    await waitReady(BASE, proc, "file-mode server");
 
     const health = await fetch(`${BASE}/api/health`);
     const body = await health.json();
@@ -46,11 +54,25 @@ async function run() {
     });
     console.log(`  demo login: ${login.status}`);
     if (!login.ok) bail("demo login broken");
-
-    console.log("HEALTH TEST PASSED");
+    console.log("  FILE-MODE PASSED");
   } finally {
     proc.kill("SIGKILL");
   }
+
+  // Phase 2: placeholder-credential URI must produce the exact lint code.
+  const lintProc = bootServer(LINT_PORT, { MONGODB_URI: "mongodb+srv://offkay_user:<password>@cluster0.abcd.mongodb.net/?retryWrites=true&w=majority" });
+  try {
+    await waitReady(LINT_BASE, lintProc, "lint server");
+    const res = await fetch(`${LINT_BASE}/api/health`);
+    const body = await res.json();
+    console.log(`  lint health: ${res.status} code=${body.code}`);
+    if (res.status !== 503 || body.ok !== false || body.code !== "placeholder-credentials") throw new Error("placeholder URI not detected");
+    console.log("  URI-LINT PASSED");
+  } finally {
+    lintProc.kill("SIGKILL");
+  }
+
+  console.log("HEALTH TEST PASSED");
 }
 
 run().catch(error => { console.error("  FAIL", error.message); process.exit(1); });
