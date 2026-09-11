@@ -264,3 +264,49 @@ button.roommate-avatar{border:0;color:white;font-weight:750;background:var(--pri
 .terms-body h3{margin:16px 0 6px;font-size:14px}
 .terms-body p{margin:0;color:var(--text-secondary);font-size:13px;line-height:1.6}
 .person-row{grid-template-columns:1fr auto auto;gap:8px}
+/* ============ Social layer: badges, notifications, people, settings ===== */
+.count-badge{position:absolute;z-index:3;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:var(--conversion);color:#1A202C;font:800 10px/17px var(--font-ui);font-style:normal;text-align:center;white-space:nowrap}
+.nav-item{position:relative}
+.msg-badge{position:absolute;top:7px;right:10px}
+.nav-item .count-badge,.nav-item .count-badge[hidden]{display:none}
+.nav-item .count-badge:not([hidden]){display:block}
+.bottom-nav button{position:relative}
+.bottom-nav .count-badge{top:6px;right:calc(50% - 20px)}
+.bottom-nav .count-badge[hidden]{display:none}
+.icon-button .count-badge{top:-4px;right:-4px}
+.icon-button{position:relative}
+.notification-list{display:grid;gap:8px;margin-bottom:12px}
+.notification-row{display:grid;grid-template-columns:42px 1fr auto;gap:11px;align-items:center;text-align:left;padding:12px;border:1px solid var(--border);border-radius:16px;background:var(--surface);color:var(--text)}
+.notification-row.unread{background:var(--secondary);border-color:color-mix(in srgb,var(--primary) 26%,transparent)}
+.notification-glyph{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;background:var(--secondary);color:var(--primary);font-size:17px}
+.notification-row.unread .notification-glyph{background:var(--primary);color:var(--primary-ink)}
+.notification-copy{min-width:0;display:grid;gap:3px}
+.notification-copy b{font-size:13px}
+.notification-copy small{color:var(--text-secondary);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.notification-copy time{font-size:10px;color:var(--text-secondary)}
+.unread-pip{width:9px;height:9px;border-radius:50%;background:var(--conversion)}
+.people-directory{display:grid;gap:12px}
+.person-card{scroll-snap-align:start}
+.person-name-link{color:inherit;text-decoration:none;font:inherit}
+.person-name-link:hover{color:var(--primary);text-decoration:underline}
+.people-filter-bar{display:flex;overflow:auto;gap:8px}
+.verify-amenity{background:color-mix(in srgb,var(--success) 14%,transparent);color:var(--success)}
+.public-profile h3{margin:18px 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary)}
+.public-profile>p{margin:0;color:var(--text);line-height:1.6}
+.profile-hero-mini{display:flex;align-items:center;gap:14px;padding:14px;border-radius:18px;background:var(--secondary)}
+.profile-hero-facts{display:grid;gap:6px}
+.profile-hero-facts small{color:var(--text-secondary)}
+.settings-group-label{margin:14px 4px 2px;font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--text-secondary)}
+.settings-themes{display:flex;gap:8px;flex-wrap:wrap;padding:4px}
+.theme-mini{padding:9px 13px;border:1px solid var(--border);border-radius:999px;background:var(--surface);color:var(--text);font:600 12px var(--font-ui)}
+.theme-mini.active{background:var(--primary);color:var(--primary-ink);border-color:var(--primary)}
+.toggle-row{grid-template-columns:1fr auto}
+.toggle{width:46px;height:27px;border-radius:999px;border:0;background:var(--border);position:relative;transition:.2s;padding:0}
+.toggle i{position:absolute;top:3px;left:3px;width:21px;height:21px;border-radius:50%;background:white;transition:.2s;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.toggle.on{background:var(--success)}
+.toggle.on i{left:22px}
+.settings-footnote{display:block;margin:14px 4px;color:var(--text-secondary);font-size:11px}
+.terms-body h3{margin:16px 0 6px;font-size:14px}
+.terms-body p{margin:0;color:var(--text-secondary);font-size:13px;line-height:1.6}
+.person-row{grid-template-columns:1fr auto auto;gap:8px}
+
