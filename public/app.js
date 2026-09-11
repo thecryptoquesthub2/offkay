@@ -407,7 +407,7 @@ function renderMessages() {
         <div id="conversationRows">${state.conversations.map(conversationRow).join("") || `<div class="no-conv-hint">No chats yet — find someone below to start one.</div>`}</div>
         <div class="discover-block">
           <h3>Find people</h3>
-          <input class="conversation-search" id="peopleSearch" placeholder="Search students &amp; landlords..." value="${esc(state.discovery || "")}">
+          <input class="conversation-search" id="peopleSearch" placeholder="Search people by name, school, or lifestyle..." value="${esc(state.discovery || "")}">
           <div id="peopleRows">${directory.slice(0,12).map(personRow).join("") || `<div class="no-conv-hint">No one matches yet. Try a different name or school.</div>`}</div>
         </div>
       </aside>
@@ -533,8 +533,9 @@ function renderProfile() {
 }
 
 function bookingsList() {
-  if (!state.bookings.length) return emptyState("No bookings yet","Choose a home and use Book &amp; split rent to create your first booking.");
-  return `<div class="settings-stack booking-stack">${state.bookings.map(booking=>{
+  const activeBookings = state.bookings.filter(booking => booking.status !== "cancelled");
+  if (!activeBookings.length) return emptyState("No bookings yet","Choose a home and use Book &amp; split rent to create your first booking.");
+  return `<div class="settings-stack booking-stack">${activeBookings.map(booking=>{
     const isTenant = booking.tenantId === state.user.id;
     const shares = Array.isArray(booking.paymentShares) && booking.paymentShares.length === booking.splitCount
       ? booking.paymentShares
@@ -549,6 +550,7 @@ function bookingsList() {
     const actions = [];
     if (isTenant && !fullyPaid && !paidSlots.includes(0)) actions.push(`<button class="button primary small" data-action="resume-payment" data-id="${booking.id}">Pay my share ${money(myShare)}</button>`);
     if (isTenant && booking.splitCount > 1 && !fullyPaid && state.paymentsEnabled) actions.push(`<button class="button subtle small" data-action="share-links" data-id="${booking.id}">Invite roommates</button>`);
+    if (isTenant && !fullyPaid && paidSlots.length === 0 && booking.status !== "cancelled") actions.push(`<button class="button subtle small danger-text" data-action="cancel-booking" data-id="${booking.id}">Cancel</button>`);
     return `<div class="settings-row booking-row">
       <span class="metric-icon">${icon("home")}</span>
       <span><b>${esc(booking.propertyTitle || "Property")}</b><small>${isTenant?`Your share ${money(myShare)} · ${booking.splitCount>1?`split ${booking.splitCount} ways`:"solo"} · ${statusText}`:`${esc(booking.tenantName || "Student")} · ${money(booking.amount)} · ${booking.status.replace(/_/g," ")}`}</small></span>
@@ -790,7 +792,7 @@ function inspectionSheet(id) {
     <form class="sheet-form" id="inspectionForm" data-id="${item.id}">
       <div class="property-strip"><span class="property-thumb"></span><span><b>${esc(item.title)}</b><small>${esc(item.area)} · ${money(item.price)}/year</small></span></div>
       <label>Preferred date<input name="preferredDate" type="date" required></label>
-      <fieldset class="segmented"><legend>Time window</legend><label><input type="radio" name="timeWindow" value="Morning" checked><span>Morning</span></label><label><input type="radio" name="timeWindow" value="Afternoon"><span>Afternoon</span></label><label><input type="radio" name="timeWindow" value="Evening"><span>Evening</span></label></fieldset>
+      <fieldset class="segmented"><legend>Time window</legend><div class="segment-options"><label><input type="radio" name="timeWindow" value="Morning" checked><span>Morning</span></label><label><input type="radio" name="timeWindow" value="Afternoon"><span>Afternoon</span></label><label><input type="radio" name="timeWindow" value="Evening"><span>Evening</span></label></div></fieldset>
       <label>Optional photo or detail<input name="evidenceImage" type="file" accept="image/*"><small>Upload a photo of the property or location if it helps the inspector.</small></label>
       <label>Note for the landlord<textarea name="note" placeholder="For example: I’m coming from campus and would like to check the water and power."></textarea></label>
       <button class="button primary wide" type="submit">Request inspection</button>
@@ -921,7 +923,7 @@ function startBooking(id) {
     <div class="modal-head"><div><h2>Secure your space</h2><p>Review the booking before continuing to payment.</p></div><button class="close-button">&times;</button></div>
     <div class="checkout-card"><div class="checkout-thumb"></div><div><b>${esc(item.title)}</b><span>${esc(item.area)} &middot; ${esc(item.university)}</span><span style="color:var(--green);font-weight:800">&#10003; Property and owner reviewed</span></div></div>
     <div class="cost-row"><span>Annual rent</span><b>${money(item.price)}</b></div>
-    <fieldset class="segmented split-segment"><legend>How would you like to pay?</legend><label><input type="radio" name="splitCount" value="1" checked><span>Pay alone</span></label><label><input type="radio" name="splitCount" value="2"><span>Split 2 ways</span></label><label><input type="radio" name="splitCount" value="3"><span>Split 3 ways</span></label><label><input type="radio" name="splitCount" value="4"><span>Split 4 ways</span></label></fieldset>
+    <fieldset class="segmented split-segment"><legend>How would you like to pay?</legend><div class="segment-options"><label><input type="radio" name="splitCount" value="1" checked><span>Pay alone</span></label><label><input type="radio" name="splitCount" value="2"><span>Split 2 ways</span></label><label><input type="radio" name="splitCount" value="3"><span>Split 3 ways</span></label><label><input type="radio" name="splitCount" value="4"><span>Split 4 ways</span></label></div></fieldset>
     <div id="shareBreakdown">${breakdown()}</div>
     <div class="cost-row"><span>Offkay fee</span><b>&#8358;0 launch offer</b></div>
     <div class="cost-row"><span>Payment protection</span><b>Included</b></div>
@@ -960,6 +962,20 @@ function resumePayment(id) {
   const nextSlot = Array.isArray(booking.paidSlots) ? [0,1,2,3].find(index => index < booking.splitCount && !booking.paidSlots.includes(index)) : 0;
   if (nextSlot === undefined && booking.status !== "paid") return toast("All shares are processing - verification lands shortly");
   payBooking(booking, null, nextSlot ?? 0);
+}
+
+async function cancelBooking(id) {
+  modal(`
+    <div class="modal-head"><div><h2>Cancel this booking?</h2><p>The property goes back on the market and no payment is collected.</p></div><button class="close-button">&times;</button></div>
+    <div class="modal-actions"><button class="button subtle" data-action="close-modal">Keep booking</button><button class="button danger" id="confirmCancelBooking">Yes, cancel it</button></div>`);
+  $("#confirmCancelBooking").onclick = async () => {
+    try {
+      await request(`/api/bookings/${id}/cancel`,{method:"POST"});
+      await refreshData();
+      closeModal(); enterApp(); switchTab("profile");
+      toast("Booking cancelled");
+    } catch(error) { toast(error.message); }
+  };
 }
 
 async function shareLinks(id) {
@@ -1100,6 +1116,7 @@ function bindEvents() {
     if (action==="confirm-delete-account") confirmDeleteAccount();
     if (action==="resume-payment") resumePayment(id);
     if (action==="share-links") shareLinks(id);
+    if (action==="cancel-booking") cancelBooking(id);
     if (action==="open-map") openMap(id);
     if (action==="start-chat") startChat(id);
     if (action==="refresh-bookings") { refreshData().then(()=>{enterApp();switchTab("profile");}); }

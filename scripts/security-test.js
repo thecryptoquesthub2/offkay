@@ -157,6 +157,40 @@ async function run() {
 
       const web = await fetch(`${BASE}/api/payments/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: "charge.success", data: { reference: "x", amount: 1 } }) });
       check("unsigned webhook rejected (401)", web.status === 401);
+
+      // Booking authorization probes
+      const victimBookingRes = await call(victim, "POST", "/api/bookings", { listingId: "lst_palm", splitCount: 1 });
+      check("victim can create booking", victimBookingRes.status === 201);
+      const victimBooking = victimBookingRes.payload.booking;
+      const attackerCancel = await call(attacker2, "POST", `/api/bookings/${victimBooking.id}/cancel`);
+      check("attacker cannot cancel someone else's booking (404)", attackerCancel.status === 404);
+      const attackerLinks = await call(attacker2, "POST", `/api/bookings/${victimBooking.id}/share`);
+      check("attacker cannot mint share links for someone else's booking (404)", attackerLinks.status === 404);
+      const attackerInit = await call(attacker2, "POST", `/api/bookings/${victimBooking.id}/pay/initialize`, { slot: 0 });
+      check("attacker cannot start payment on someone else's booking (404)", attackerInit.status === 404);
+      const badSlot = await call(victim, "POST", `/api/bookings/${victimBooking.id}/pay/initialize`, { slot: 9 });
+      check("out-of-range slot rejected (payment 503 or slot-clamped)", badSlot.status === 503 || badSlot.status === 409 || badSlot.status === 400);
+      const victimCancel = await call(victim, "POST", `/api/bookings/${victimBooking.id}/cancel`);
+      check("victim cancels own unpaid booking (200)", victimCancel.status === 200 && victimCancel.payload.booking.status === "cancelled");
+      const cancelPaid = await call(victim, "POST", `/api/bookings/${victimBooking.id}/cancel`);
+      check("double-cancel is idempotent (200)", cancelPaid.status === 200);
+    }
+
+    console.log("== forged webhook / reference probing ==");
+    {
+      clientIp = 110;
+      // With no key configured the webhook always 401s; probe must never 500.
+      const probeRefs = ["OFFKAY-bkg_x-0", "../../etc/passwd", "OFFKAY-bkg_"];
+      let safe = true;
+      for (const ref of probeRefs) {
+        const probe = await fetch(`${BASE}/api/payments/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: "charge.success", data: { reference: ref, amount: 100 } }) });
+        if (probe.status >= 500) safe = false;
+      }
+      check("webhook reference probes never crash (no 5xx)", safe);
+      const shareAnon = await call(null, "POST", "/api/bookings/bkg_fake/share");
+      check("anonymous cannot mint share links (401)", shareAnon.status === 401);
+      const verifyAnon = await call(null, "POST", "/api/bookings/bkg_fake/pay/verify", { reference: "OFFKAY-bkg_fake-x-0" });
+      check("anonymous cannot verify payments (401)", verifyAnon.status === 401);
     }
 
     console.log("== race: concurrent duplicate signups ==");

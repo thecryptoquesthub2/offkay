@@ -790,7 +790,7 @@ async function api(req, res, url) {
     const university = String(url.searchParams.get("university") || "").trim().slice(0, 120);
     const visible = db.users.filter(item => {
       if (item.id === account.id) return false;
-      if (!(item.role === "tenant" || item.hosting === true)) return false;
+      if (item.role !== "tenant" && item.role !== "landlord" && item.hosting !== true) return false;
       if (university && item.university !== university) return false;
       if (q) {
         const haystack = `${item.name} ${item.university || ""} ${(item.habits || []).join(" ")}`.toLowerCase();
@@ -810,8 +810,8 @@ async function api(req, res, url) {
   if (route === "/api/conversations/start" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
     const body = await parseBody(req);
-    const candidate = db.users.find(item => item.id === body.userId && (item.role === "tenant" || item.hosting === true));
-    if (!candidate || candidate.id === account.id) return error(res,404,"Student not found");
+    const candidate = db.users.find(item => item.id === body.userId);
+    if (!candidate || candidate.id === account.id) return error(res,404,"User not found");
     let conversation = db.conversations.find(item => !item.listingId && item.memberIds.includes(account.id) && item.memberIds.includes(candidate.id));
     if (!conversation) {
       conversation = {id:id("con"),memberIds:[account.id,candidate.id],listingId:null,updatedAt:new Date().toISOString(),reads:{}};
@@ -898,6 +898,21 @@ async function api(req, res, url) {
     return json(res,200,{booking});
   }
 
+  const cancelMatch = route.match(/^\/api\/bookings\/([^/]+)\/cancel$/);
+  if (cancelMatch && method === "POST") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const booking = db.bookings.find(item => item.id === cancelMatch[1] && item.tenantId === account.id);
+    if (!booking) return error(res,404,"Booking not found");
+    if (booking.status === "paid") return error(res,409,"Paid bookings cannot be cancelled here - contact support with your payment reference");
+    if (booking.status === "cancelled") return json(res,200,{booking});
+    const paidSlots = Array.isArray(booking.paidSlots) ? booking.paidSlots.length : 0;
+    if (paidSlots > 0) return error(res,409,"A share has already been paid - this booking can no longer be cancelled");
+    booking.status = "cancelled";
+    booking.cancelledAt = new Date().toISOString();
+    await persistDb(db);
+    return json(res,200,{booking});
+  }
+
   const shareMatch = route.match(/^\/api\/bookings\/([^/]+)\/share$/);
   if (shareMatch && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
@@ -917,9 +932,9 @@ async function api(req, res, url) {
   const initMatch = route.match(/^\/api\/bookings\/([^/]+)\/pay\/initialize$/);
   if (initMatch && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
-    if (!PAYSTACK_SECRET_KEY) return error(res, 503, "Payments are not configured on this server yet");
     const booking = db.bookings.find(item => item.id === initMatch[1] && item.tenantId === account.id);
     if (!booking) return error(res, 404, "Booking not found");
+    if (!PAYSTACK_SECRET_KEY) return error(res, 503, "Payments are not configured on this server yet");
     if (booking.status === "paid") return error(res, 409, "This booking is already paid");
     const body = await parseBody(req);
     const slotRaw = Number(body.slot);
