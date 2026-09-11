@@ -386,6 +386,24 @@ async function run() {
       check("bootstrap listings include proximity summary with no raw coordinates", geoBody.listings.every(l => !("latitude" in l) && !("longitude" in l)));
       const dist = await call(null, "GET", `/api/distance/university?university=${encodeURIComponent("Nowhere University")}`);
       check("unknown university handled gracefully", dist.status === 200 && dist.payload.available === false);
+
+      // End-to-end: a geocoded property near UNILAG gets a real calculated
+      // distance and ETA from stored coordinates (nothing hardcoded).
+      const ljar = jar();
+      await call(ljar, "POST", "/api/auth/signup", { name:"Geo Landlord", email:"geo-landlord@example.com", password:"password123", university:"University of Lagos" });
+      await call(ljar, "POST", "/api/host/activate", {});
+      const geoListing = await call(ljar, "POST", "/api/listings", { title:"Geo Court", area:"Akoka, Lagos", price:300000, university:"University of Lagos", type:"Studio", latitude:6.5158, longitude:3.3898 });
+      check("geocoded listing created", geoListing.status === 201);
+      const distOk = await call(null, "GET", `/api/distance/university?listingId=${geoListing.payload.listing.id}`);
+      const prox = distOk.payload.proximity || {};
+      check("distance endpoint returns calculated distance", distOk.status === 200 && distOk.payload.available === true && /km|m/.test(prox.distanceText || ""));
+      check("distance endpoint returns calculated ETA", /min/.test(prox.etaText || ""));
+      check("distance payload exposes university coordinates only, not the property's", distOk.payload.proximity.destination && Number.isFinite(distOk.payload.proximity.destination.lat) && !("latitude" in prox));
+      const feedListing = geoBody.listings.find(l => l.id === geoListing.payload.listing.id) || (await (await fetch(`${URL_BASE}/api/bootstrap`)).json()).listings.find(l => l.id === geoListing.payload.listing.id);
+      check("bootstrap geocoded listing carries proximity", Boolean(feedListing?.proximity?.distanceText));
+      const plainListing = await call(ljar, "POST", "/api/listings", { title:"No Geo Court", area:"Akoka, Lagos", price:250000, university:"University of Lagos", type:"Shared" });
+      const ungeo = await call(null, "GET", `/api/distance/university?listingId=${plainListing.payload.listing.id}`);
+      check("un-geocoded property returns available:false", ungeo.status === 200 && ungeo.payload.available === false && ungeo.payload.reason === "missing_coordinates");
     }
 
     console.log("== account management ==");
