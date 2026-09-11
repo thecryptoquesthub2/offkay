@@ -31,6 +31,8 @@ function loadDotEnvFile(file) {
 loadDotEnvFile(path.join(__dirname, ".env.local"));
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || "";
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "offkay-admin-dev";
+const NIN_KEY = crypto.createHash("sha256").update(process.env.NIN_ENCRYPTION_KEY || ADMIN_TOKEN).digest();
 const PAYSTACK_BASE = "https://api.paystack.co";
 
 const universities = [
@@ -49,6 +51,186 @@ const universities = [
   "Federal University Dutse","Federal University Lafia","Federal University Lokoja","Federal University Kashere",
   "Alex Ekwueme Federal University"
 ];
+
+/* ---- Geography ----------------------------------------------------------
+   Real coordinates for every supported campus. Distances/ETAs are always
+   calculated from these stored coordinates — never hardcoded per property. */
+const UNIVERSITY_LOCATIONS = {
+  "University of Lagos": { lat: 6.5158, lng: 3.3898 },
+  "University of Ibadan": { lat: 7.4433, lng: 3.9008 },
+  "University of Nigeria, Nsukka": { lat: 6.8682, lng: 7.4106 },
+  "Obafemi Awolowo University": { lat: 7.5181, lng: 4.5237 },
+  "Ahmadu Bello University": { lat: 11.1502, lng: 7.6494 },
+  "University of Benin": { lat: 6.3986, lng: 5.6247 },
+  "University of Ilorin": { lat: 8.4799, lng: 4.5418 },
+  "University of Abuja": { lat: 8.9583, lng: 7.2211 },
+  "University of Port Harcourt": { lat: 4.9019, lng: 6.9213 },
+  "Federal University of Technology, Akure": { lat: 7.2986, lng: 5.1341 },
+  "Federal University of Technology, Minna": { lat: 9.5618, lng: 6.5471 },
+  "Federal University of Technology, Owerri": { lat: 5.3866, lng: 7.0366 },
+  "University of Jos": { lat: 9.2997, lng: 9.8652 },
+  "University of Calabar": { lat: 4.9644, lng: 8.3414 },
+  "University of Uyo": { lat: 5.0333, lng: 7.9333 },
+  "Bayero University Kano": { lat: 11.9776, lng: 8.4764 },
+  "Nnamdi Azikiwe University": { lat: 6.2483, lng: 7.1407 },
+  "Usmanu Danfodiyo University": { lat: 13.0646, lng: 5.2342 },
+  "University of Maiduguri": { lat: 11.8333, lng: 13.1511 },
+  "Federal University Oye-Ekiti": { lat: 7.8021, lng: 5.3133 },
+  "Lagos State University": { lat: 6.4698, lng: 3.1996 },
+  "Olabisi Onabanjo University": { lat: 6.9167, lng: 3.5000 },
+  "Ekiti State University": { lat: 7.6494, lng: 5.2214 },
+  "Adekunle Ajasin University": { lat: 7.2833, lng: 5.1333 },
+  "Delta State University": { lat: 6.6804, lng: 6.2164 },
+  "Rivers State University": { lat: 4.8083, lng: 7.0128 },
+  "Ambrose Alli University": { lat: 6.7404, lng: 6.1194 },
+  "Benue State University": { lat: 7.7333, lng: 8.5167 },
+  "Kaduna State University": { lat: 10.5222, lng: 7.4383 },
+  "Kwara State University": { lat: 8.3986, lng: 4.5364 },
+  "Covenant University": { lat: 6.6718, lng: 3.1583 },
+  "Babcock University": { lat: 6.8937, lng: 3.7098 },
+  "Afe Babalola University": { lat: 7.5925, lng: 5.2336 },
+  "Bowen University": { lat: 7.8463, lng: 4.1861 },
+  "Landmark University": { lat: 8.1378, lng: 5.1044 },
+  "American University of Nigeria": { lat: 9.2903, lng: 12.4861 },
+  "Pan-Atlantic University": { lat: 6.4413, lng: 3.4712 },
+  "Redeemer's University": { lat: 6.8158, lng: 3.4750 },
+  "Lead City University": { lat: 7.3750, lng: 3.8581 },
+  "Nile University of Nigeria": { lat: 9.0714, lng: 7.4114 },
+  "University of Medical Sciences, Ondo": { lat: 7.1000, lng: 4.8333 },
+  "Federal University of Agriculture, Abeokuta": { lat: 7.1557, lng: 3.3450 },
+  "Michael Okpara University of Agriculture": { lat: 5.6197, lng: 7.6119 },
+  "Modibbo Adama University": { lat: 10.2844, lng: 11.3633 },
+  "Abubakar Tafawa Balewa University": { lat: 10.3158, lng: 9.8411 },
+  "Federal University Dutse": { lat: 11.7061, lng: 9.3369 },
+  "Federal University Lafia": { lat: 8.5833, lng: 8.5333 },
+  "Federal University Lokoja": { lat: 7.8000, lng: 6.7333 },
+  "Federal University Kashere": { lat: 9.6333, lng: 11.0500 },
+  "Alex Ekwueme Federal University": { lat: 5.8606, lng: 7.9839 }
+};
+
+const EARTH_RADIUS_KM = 6371.0088;
+const ROUTING_CACHE_TTL = 1000 * 60 * 30; // 30 minutes
+const routingCache = new Map();
+
+// Great-circle distance between two coordinates in km.
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const toRad = value => value * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+function formatDistance(km) {
+  if (!Number.isFinite(km) || km < 0) return null;
+  if (km < 1) return `${Math.round(km * 1000)} m`;
+  return `${(Math.round(km * 10) / 10).toFixed(1)} km`;
+}
+
+// Estimated travel time from straight-line distance. Only used when no
+// routing provider is configured — a real Directions/OSRM response replaces
+// this estimate without any property-system changes.
+function estimateDriveMinutes(km) {
+  if (!Number.isFinite(km)) return null;
+  if (km <= 0.8) return Math.max(2, Math.round(km * 14));
+  if (km <= 3) return Math.round(4 + km * 4);
+  if (km <= 10) return Math.round(8 + km * 3);
+  return Math.round(15 + km * 2.2);
+}
+
+function formatEta(minutes) {
+  if (!Number.isFinite(minutes) || minutes < 0) return null;
+  return `${Math.max(1, Math.round(minutes))} min`;
+}
+
+function listingHasCoords(listing) {
+  return Number.isFinite(Number(listing.latitude)) && Number.isFinite(Number(listing.longitude))
+    && Number(listing.latitude) !== 0 && Number(listing.longitude) !== 0;
+}
+
+function proximityPayload(listing) {
+  const uni = UNIVERSITY_LOCATIONS[listing.university];
+  if (!uni || !listingHasCoords(listing)) return null;
+  const km = haversineKm(Number(listing.latitude), Number(listing.longitude), uni.lat, uni.lng);
+  return {
+    university: listing.university,
+    destination: { lat: uni.lat, lng: uni.lng },
+    distanceText: formatDistance(km),
+    etaText: formatEta(estimateDriveMinutes(km)),
+    distanceKm: Math.round(km * 100) / 100,
+    provider: "estimate",
+    approximate: true
+  };
+}
+
+function fetchJson(url, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Routing request timed out")), timeoutMs);
+    fetch(url)
+      .then(async response => {
+        clearTimeout(timer);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        resolve(await response.json());
+      })
+      .catch(err => { clearTimeout(timer); reject(err); });
+  });
+}
+
+// Real road distance/ETA via a routing provider, with a 30-minute cache.
+// Tries Google Directions (GOOGLE_MAPS_API_KEY), then OSRM (OSRM_BASE_URL),
+// then returns null so callers fall back to the straight-line estimate.
+async function routeEtaKm(origin, destination) {
+  const key = `${origin.lat.toFixed(5)},${origin.lng.toFixed(5)}|${destination.lat.toFixed(5)},${destination.lng.toFixed(5)}`;
+  const cached = routingCache.get(key);
+  if (cached && Date.now() < cached.expiresAt) return cached.value;
+
+  const googleKey = process.env.GOOGLE_MAPS_API_KEY || "";
+  if (googleKey) {
+    try {
+      const raw = await fetchJson(`https://maps.googleapis.com/maps/api/directions/json?origin=${origin.lat},${origin.lng}`
+        + `&destination=${destination.lat},${destination.lng}&mode=driving&key=${encodeURIComponent(googleKey)}`);
+      const leg = raw?.routes?.[0]?.legs?.[0];
+      if (leg) {
+        const value = { provider: "google_directions", distanceKm: (leg.distance?.value || 0) / 1000, durationMinutes: (leg.duration?.value || 0) / 60, approximate: false };
+        routingCache.set(key, { value, expiresAt: Date.now() + ROUTING_CACHE_TTL });
+        return value;
+      }
+      console.error("Google Directions returned no route:", raw?.status, raw?.error_message || "");
+    } catch (err) { console.error("Google Directions request failed:", err.message); }
+  }
+
+  const osrmBase = (process.env.OSRM_BASE_URL || "").replace(/\/$/, "");
+  if (osrmBase) {
+    try {
+      const raw = await fetchJson(`${osrmBase}/route/v1/driving/${origin.lng},${origin.lat};${destination.lng},${destination.lat}?overview=false`);
+      const route = raw?.routes?.[0];
+      if (raw?.code === "Ok" && route) {
+        const value = { provider: "osrm", distanceKm: (route.distance || 0) / 1000, durationMinutes: (route.duration || 0) / 60, approximate: false };
+        routingCache.set(key, { value, expiresAt: Date.now() + ROUTING_CACHE_TTL });
+        return value;
+      }
+      console.error("OSRM returned no route:", raw?.code || raw?.message || "");
+    } catch (err) { console.error("OSRM request failed:", err.message); }
+  }
+
+  return null;
+}
+
+async function proximityPayloadAsync(listing) {
+  const base = proximityPayload(listing);
+  if (!base) return null;
+  const uni = UNIVERSITY_LOCATIONS[listing.university];
+  const route = await routeEtaKm({ lat: Number(listing.latitude), lng: Number(listing.longitude) }, { lat: uni.lat, lng: uni.lng });
+  if (!route) return base;
+  return {
+    ...base,
+    distanceText: formatDistance(route.distanceKm) || base.distanceText,
+    etaText: formatEta(route.durationMinutes) || base.etaText,
+    distanceKm: Math.round(route.distanceKm * 100) / 100,
+    provider: route.provider,
+    approximate: route.approximate
+  };
+}
 
 function id(prefix) {
   return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
@@ -423,6 +605,69 @@ function publicUser(user) {
   return safe;
 }
 
+/* Canonical verification states exposed to the UI. The legacy
+   "manual_review" storage value maps onto PENDING for display purposes. */
+const VERIFICATION_STATUS = {
+  NOT_VERIFIED: "NOT_VERIFIED",
+  PENDING: "PENDING",
+  VERIFIED: "VERIFIED",
+  REJECTED: "REJECTED"
+};
+
+function verificationStatusFromUser(user, verification) {
+  if (user?.verified) return VERIFICATION_STATUS.VERIFIED;
+  const status = verification?.status || user?.verificationStatus;
+  if (status === "manual_review" || status === "PENDING" || status === "pending") return VERIFICATION_STATUS.PENDING;
+  if (status === "verified" || status === "VERIFIED") return VERIFICATION_STATUS.VERIFIED;
+  if (status === "rejected" || status === "REJECTED") return VERIFICATION_STATUS.REJECTED;
+  return VERIFICATION_STATUS.NOT_VERIFIED;
+}
+
+/* Own-submission view for the signed-in user: existence flags, a masked NIN,
+   and review metadata only — never document bytes or the full NIN. */
+function verificationForOwner(verification, user) {
+  if (!verification) return null;
+  return {
+    id: verification.id, userId: verification.userId, idType: verification.idType,
+    ninMasked: maskNin(verification.nin), status: verification.status,
+    hasIdCard: Boolean(verification.idCardImage), hasSupportDocument: Boolean(verification.supportDocument),
+    rejectionReason: verification.rejectionReason || null,
+    reviewedAt: verification.reviewedAt || null, createdAt: verification.createdAt,
+    statusLabel: verificationStatusFromUser(user, verification)
+  };
+}
+
+function maskNin(storedNin) {
+  const nin = decrypt(storedNin);
+  if (!nin) return "**********";
+  return `${"*".repeat(Math.max(0, nin.length - 4))}${nin.slice(-4)}`;
+}
+
+function encrypt(text) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", NIN_KEY, iv);
+  const enc = Buffer.concat([cipher.update(String(text), "utf8"), cipher.final()]);
+  return `enc1:${iv.toString("base64")}:${cipher.getAuthTag().toString("base64")}:${enc.toString("base64")}`;
+}
+
+function decrypt(payload) {
+  if (!payload) return null;
+  if (!String(payload).startsWith("enc1:")) return payload;
+  try {
+    const [, iv, tag, data] = String(payload).split(":");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", NIN_KEY, Buffer.from(iv, "base64"));
+    decipher.setAuthTag(Buffer.from(tag, "base64"));
+    return Buffer.concat([decipher.update(Buffer.from(data, "base64")), decipher.final()]).toString("utf8");
+  } catch { return null; }
+}
+
+function adminTokenOk(req) {
+  const header = String(req.headers.authorization || "");
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  if (!token || token.length !== ADMIN_TOKEN.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(ADMIN_TOKEN));
+}
+
 // Privacy-safe profile shown to other users: no email, phone, or internal state.
 function profileView(account) {
   if (!account) return null;
@@ -569,10 +814,14 @@ function listingOccupancy(listing, db) {
 
 function listingPayload(listing, db, user) {
   const owner = db.users.find(item => item.id === listing.ownerId);
+  // Property coordinates stay server-side: only the proximity summary, which
+  // contains the public university coordinates, is exposed to clients.
+  const { latitude, longitude, ...publicListing } = listing;
   return {
-    ...listing,
+    ...publicListing,
     owner: owner ? { id:owner.id, name:owner.name, verified:owner.verified } : null,
     saved: Boolean(user && db.saved.some(item => item.userId === user.id && item.listingId === listing.id)),
+    proximity: proximityPayload(listing),
     ...listingOccupancy(listing, db)
   };
 }
@@ -716,7 +965,7 @@ async function api(req, res, url) {
       .filter(item => item.id !== user.id && (item.role === "tenant" || item.hosting === true))
       .map(candidate => ({ ...profileView(candidate), score: matchScoreFor(db, user, candidate), connection: connectionStateFor(db, user.id, candidate.id) }))
       .sort((a,b)=>b.score-a.score) : [];
-    const verification = user ? db.verifications.filter(item => item.userId === user.id).at(-1) || null : null;
+    const verification = user ? db.verifications.filter(item => item.userId === user.id).sort((a,b) => String(b.createdAt||"").localeCompare(String(a.createdAt||"")))[0] || null : null;
     const people = user ? db.users
       .filter(item => item.id !== user.id && (item.role === "tenant" || item.hosting === true))
       .map(item => ({ ...profileView(item), score: matchScoreFor(db, user, item), connection: connectionStateFor(db, user.id, item.id) }))
@@ -725,7 +974,10 @@ async function api(req, res, url) {
     return json(res, 200, {
       user: publicUser(user),
       universities: [...new Set(universities)].sort((a,b)=>a.localeCompare(b)),
-      listings, ownListings, conversations, bookings, inspections, roommateCandidates, verification, people,
+      listings, ownListings, conversations, bookings, inspections, roommateCandidates,
+      verification: verificationForOwner(verification, user),
+      verificationStatus: verificationStatusFromUser(user, verification),
+      people,
       notifications: myNotifications.slice(0, 30).map(item => notificationPayload(item, db)),
       notificationsUnread: myNotifications.filter(item => !item.read).length,
       unreadMessages: user ? unreadMessageTotal(db, user.id) : 0,
@@ -834,13 +1086,22 @@ async function api(req, res, url) {
     return json(res, 200, {user:publicUser(account)});
   }
 
+  if (route === "/api/verification" && method === "GET") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const verification = db.verifications.filter(item => item.userId === account.id).sort((a,b) => String(b.createdAt||"").localeCompare(String(a.createdAt||"")))[0] || null;
+    return json(res,200,{verification:verificationForOwner(verification,account),statusLabel:verificationStatusFromUser(account,verification)});
+  }
+
   if (route === "/api/verification" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
+    // Backend enforcement: an approved user can never submit another
+    // verification, regardless of what the frontend shows.
+    if (account.verified) return error(res,409,"Your account is already verified. Verification is complete and no further submission is needed.");
     const body = await parseBody(req);
     const nin = String(body.nin || "").replace(/\D/g,"");
     if (nin.length < 8) return error(res,400,"Enter a valid NIN before submitting verification");
     const verification = {
-      id:id("ver"),userId:account.id,nin:nin.slice(0,20),idType:String(body.idType || "Student ID").slice(0,60),
+      id:id("ver"),userId:account.id,nin:encrypt(nin.slice(0,20)),idType:String(body.idType || "Student ID").slice(0,60),
       idCardImage:typeof body.idCardImage === "string" && body.idCardImage.startsWith("data:image/") ? body.idCardImage.slice(0,1_200_000) : null,
       supportDocument:typeof body.supportDocument === "string" && body.supportDocument.startsWith("data:image/") ? body.supportDocument.slice(0,1_200_000) : null,
       status:"manual_review",createdAt:new Date().toISOString()
@@ -848,7 +1109,7 @@ async function api(req, res, url) {
     db.verifications.push(verification);
     account.verificationStatus = "manual_review";
     await persistDb(db);
-    return json(res,201,{verification,user:publicUser(account)});
+    return json(res,201,{verification:verificationForOwner(verification,account),user:publicUser(account)});
   }
 
   if (route === "/api/listings" && method === "POST") {
@@ -1336,6 +1597,23 @@ async function api(req, res, url) {
     return json(res, 200, { booking });
   }
 
+  // Distance + ETA from a property to its university, computed server-side
+  // from stored coordinates. Uses Google Directions when GOOGLE_MAPS_API_KEY
+  // is set, OSRM when OSRM_BASE_URL is set, otherwise a straight-line
+  // estimate. Property coordinates are never returned to the client.
+  const distanceMatch = route.match(/^\/api\/distance\/university$/);
+  if (distanceMatch && method === "GET") {
+    const listingId = url.searchParams.get("listingId");
+    const university = url.searchParams.get("university") || "";
+    const listing = listingId ? db.listings.find(item => item.id === listingId) : null;
+    if (!listing && !university) return error(res,400,"Provide listingId or university");
+    const uniName = listing ? listing.university : university;
+    if (!UNIVERSITY_LOCATIONS[uniName]) return json(res,200,{available:false,reason:"unknown_university"});
+    if (!listing || !listingHasCoords(listing)) return json(res,200,{available:false,reason:"missing_coordinates",university:uniName});
+    const proximity = await proximityPayloadAsync(listing);
+    return json(res,200,{available:true,university:uniName,proximity});
+  }
+
   if (route === "/api/payments/webhook" && method === "POST") {
     const chunks = [];
     for await (const chunk of req) {
@@ -1371,6 +1649,82 @@ async function api(req, res, url) {
       }
     }
     return json(res, 200, { received: true });
+  }
+
+  if (route.startsWith("/api/admin/")) {
+    // Every admin route requires a valid bearer ADMIN_TOKEN. Submitted
+    // verification documents are ONLY reachable here — never through any
+    // public or user-scoped route.
+    if (!adminTokenOk(req)) return error(res,401,"Admin token required");
+    if (route === "/api/admin/overview" && method === "GET") {
+      return json(res,200,{
+        stats: {
+          users: db.users.length, tenants: db.users.filter(u=>u.role==="tenant").length,
+          landlords: db.users.filter(u=>u.role==="landlord").length,
+          listings: db.listings.length, pendingVerifications: db.verifications.filter(v=>v.status==="manual_review" || v.status==="PENDING" || v.status==="pending").length,
+          pendingListings: db.listings.filter(l=>!l.verified).length,
+          openReports: (db.reports || []).filter(r=>r.status==="received" || !r.status).length
+        },
+        // Admin review list: PENDING submissions with the applicant identity
+        // data needed for review. Raw documents are NOT embedded here — bytes
+        // are only served on demand via the admin-token-guarded document endpoint.
+        verifications: db.verifications
+          .filter(v => v.status === "manual_review" || v.status === "PENDING" || v.status === "pending")
+          .sort((a,b) => String(b.createdAt||"").localeCompare(String(a.createdAt||"")))
+          .map(v => {
+            const applicant = db.users.find(u => u.id === v.userId);
+            return {...verificationForOwner(v, applicant), statusLabel: VERIFICATION_STATUS.PENDING, applicantName: applicant?.name || "Unknown", applicantEmail: applicant?.email || "", applicantRole: applicant?.role || "tenant", applicantUniversity: applicant?.university || ""};
+          }),
+        reports: (db.reports || []).map(r => ({...r, reporterName: db.users.find(u=>u.id===r.reportedBy)?.name || "Unknown"})),
+        listings: db.listings.filter(l => !l.verified).map(l => ({...listingPayload(l, db, null), ownerName: db.users.find(u=>u.id===l.ownerId)?.name || "Unknown"})),
+        users: db.users.map(u => ({ id:u.id, name:u.name, email:u.email, role:u.role, university:u.university, verified:Boolean(u.verified), verificationStatus:verificationStatusFromUser(u, db.verifications.filter(v=>v.userId===u.id).at(-1)), createdAt:u.createdAt }))
+      });
+    }
+    const reviewMatch = route.match(/^\/api\/admin\/verification\/([^/]+)\/review$/);
+    if (reviewMatch && method === "POST") {
+      const body = await parseBody(req);
+      const verification = db.verifications.find(v => v.id === reviewMatch[1]);
+      if (!verification) return error(res,404,"Verification not found");
+      if (verification.status !== "manual_review" && verification.status !== "PENDING" && verification.status !== "pending") return error(res,409,"This request was already reviewed");
+      const approve = body.decision === "approve";
+      const reason = String(body.reason || "").trim().slice(0,300);
+      if (!approve && !reason) return error(res,400,"Give a short rejection reason");
+      verification.status = approve ? "verified" : "rejected";
+      verification.reviewedAt = new Date().toISOString();
+      verification.rejectionReason = approve ? null : reason;
+      const applicant = db.users.find(u => u.id === verification.userId);
+      if (applicant) {
+        applicant.verified = approve;
+        applicant.verificationStatus = verification.status;
+      }
+      await persistDb(db);
+      return json(res,200,{verification:verificationForOwner(verification,applicant)});
+    }
+    const documentMatch = route.match(/^\/api\/admin\/verification\/([^/]+)\/document\/(idCard|support)$/);
+    // SECURITY: document bytes are only served inside this /api/admin/* block,
+    // which returns 401 unless the request carries a valid ADMIN_TOKEN. No
+    // public or user-scoped route returns document data.
+    if (documentMatch && method === "GET") {
+      const verification = db.verifications.find(v => v.id === documentMatch[1]);
+      if (!verification) return error(res,404,"Verification not found");
+      const dataUri = documentMatch[2] === "idCard" ? verification.idCardImage : verification.supportDocument;
+      if (!dataUri) return error(res,404,"No document uploaded");
+      const [meta, base64] = dataUri.split(",");
+      const mimeMatch = meta.match(/data:([^;]+)/);
+      res.writeHead(200,{"Content-Type":mimeMatch?.[1] || "application/octet-stream","Cache-Control":"no-store"});
+      return res.end(Buffer.from(base64 || "", "base64"));
+    }
+    const listingVerifyMatch = route.match(/^\/api\/admin\/listing\/([^/]+)\/verify$/);
+    if (listingVerifyMatch && method === "POST") {
+      const body = await parseBody(req);
+      const listing = db.listings.find(l => l.id === listingVerifyMatch[1]);
+      if (!listing) return error(res,404,"Listing not found");
+      listing.verified = body.decision !== "reject";
+      if (body.decision === "reject") listing.status = "hidden";
+      await persistDb(db);
+      return json(res,200,{listing:listingPayload(listing, db, null)});
+    }
+    return error(res,404,"Admin route not found");
   }
 
   return error(res,404,"API route not found");

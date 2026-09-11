@@ -310,3 +310,32 @@ button.roommate-avatar{border:0;color:white;font-weight:750;background:var(--pri
 .terms-body p{margin:0;color:var(--text-secondary);font-size:13px;line-height:1.6}
 .person-row{grid-template-columns:1fr auto auto;gap:8px}
 
+/* ---- Verification states ------------------------------------------------ */
+.verified-line.pending{background:#fff2d8;color:var(--amber)}
+.verified-line.rejected{background:#fde8e8;color:var(--danger)}
+.verify-reason{display:block;margin-top:6px;color:var(--text-secondary,var(--muted));font-size:11px}
+.account-actions{display:grid;gap:8px}
+.verify-panel{display:grid;gap:6px;border-radius:18px;padding:13px;background:var(--surface-strong,rgba(255,255,255,.92));border:1px solid var(--border,var(--line));text-align:left}
+.verify-panel>div{display:flex;align-items:center;gap:8px;font-size:13px}
+.verify-panel p{margin:0;color:var(--text-secondary,var(--muted));font-size:11px;line-height:1.5}
+.verify-panel .button{margin-top:6px}
+.verify-panel.verified{background:color-mix(in srgb,var(--mint) 55%,white)}
+.verify-panel.pending{background:#fff7e6;border-color:#f4dcae}
+.verify-panel.rejected{background:#fdf0f0;border-color:#f2caca}
+
+/* ---- Proximity (distance + ETA to university) ---------------------------- */
+.proximity-chip{display:inline-flex;align-items:center;gap:5px;margin-top:8px;padding:5px 9px;border-radius:999px;background:var(--secondary);color:var(--primary,var(--green));font-size:10px;font-weight:650;width:max-content;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.proximity-strip{display:grid;gap:3px;margin:12px 0;padding:12px 14px;border-radius:16px;background:var(--secondary)}
+.proximity-strip .proximity-strong{font-weight:750;color:var(--primary,var(--green));font-size:14px}
+.proximity-strip small{color:var(--text-secondary,var(--muted));font-size:11px}
+.proximity-strip em{font-style:normal;color:var(--text-secondary,var(--muted));font-size:10px;opacity:.8}
+
+/* ---- Explore: vertical scrolling property list ----------------------------
+   Only Explore uses this; the Home shelf keeps its horizontal presentation. */
+.explore-list{display:grid;gap:13px}
+.explore-list .listing-card{flex:0 0 auto;width:100%;min-width:0;max-width:none}
+@media(min-width:700px){
+  .explore-list .listing-card{display:grid;grid-template-columns:minmax(200px,300px) minmax(0,1fr)}
+  .explore-list .listing-image{height:100%;min-height:170px;border-radius:var(--radius-medium,var(--radius)) 0 0 var(--radius-medium,var(--radius))}
+  .explore-list .listing-info{padding:16px 18px}
+}
