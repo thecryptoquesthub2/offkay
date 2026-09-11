@@ -7,7 +7,7 @@
   <meta name="description" content="Find verified student homes and compatible roommates near Nigerian universities.">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/app.css?v=3">
+  <link rel="stylesheet" href="/app.css?v=4">
   <title>Offkay</title>
 </head>
 <body>
@@ -78,7 +78,7 @@
         <kbd>Ctrl K</kbd>
       </div>
       <div class="top-actions">
-        <button class="icon-button" id="notificationButton" aria-label="Notifications">&#9826;<i></i></button>
+        <button class="icon-button" id="notificationButton" aria-label="Notifications">&#9826;<i></i><b class="count-badge notif-badge" hidden></b></button>
         <button class="user-chip" data-tab="profile"><span class="avatar" id="topAvatar">AO</span><span><b id="topName">Amara</b><small id="topRole">Tenant</small></span><em>v</em></button>
       </div>
     </header>
@@ -87,8 +87,8 @@
       <nav class="main-nav" aria-label="Primary">
         <button class="nav-item active" data-tab="home"><svg><use href="/offkay-icons.svg#home"></use></svg><b>Home</b></button>
         <button class="nav-item" data-tab="explore"><svg><use href="/offkay-icons.svg#pin"></use></svg><b>Explore</b></button>
-        <button class="nav-item" data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b><i id="messageBadge"></i></button>
-        <button class="nav-item" data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Settings</b></button>
+        <button class="nav-item" data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b><i class="count-badge msg-badge" hidden></i></button>
+        <button class="nav-item" data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Profile</b></button>
       </nav>
       <div class="sidebar-card" id="sidebarCard">
         <span>Roommate Match</span>
@@ -108,13 +108,13 @@
     <nav class="bottom-nav glass" aria-label="Mobile navigation">
       <button class="active" data-tab="home"><svg><use href="/offkay-icons.svg#home"></use></svg><b>Home</b></button>
       <button data-tab="explore"><svg><use href="/offkay-icons.svg#pin"></use></svg><b>Explore</b></button>
-      <button data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b></button>
-      <button data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Settings</b></button>
+      <button data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b><i class="count-badge msg-badge" hidden></i></button>
+      <button data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Profile</b><i class="count-badge notif-badge" hidden></i></button>
     </nav>
   </div>
 
   <div id="modalRoot" class="modal-root" aria-live="polite"></div>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=2"></script>
+  <script src="/app.js?v=3"></script>
 </body>
 </html>

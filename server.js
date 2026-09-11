@@ -129,7 +129,9 @@ function seedDb() {
     bookings: [],
     inspections: [],
     reports: [],
-    verifications: []
+    verifications: [],
+    notifications: [],
+    connections: []
   };
 }
 
@@ -169,6 +171,8 @@ function readDb() {
   db.inspections ||= [];
   db.reports ||= [];
   db.verifications ||= [];
+  db.notifications ||= [];
+  db.connections ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
   const demoCoords = { lst_palm:[6.5158,3.3898], lst_maple:[7.4433,3.9008], lst_green:[6.8683,7.4064], lst_cedar:[7.5180,4.5230] };
   db.listings.forEach(listing => {
@@ -269,7 +273,7 @@ async function loadDb() {
     boom.status = 503;
     throw boom;
   }
-  const [meta, users, sessions, listings, saved, conversations, messages, bookings, inspections, reports, verifications] = await Promise.all([
+  const [meta, users, sessions, listings, saved, conversations, messages, bookings, inspections, reports, verifications, notifications, connections] = await Promise.all([
     database.collection("state").findOne({ _id: "counters" }),
     database.collection("users").find({}).toArray(),
     database.collection("sessions").find({}).toArray(),
@@ -280,7 +284,9 @@ async function loadDb() {
     database.collection("bookings").find({}).toArray(),
     database.collection("inspections").find({}).toArray(),
     database.collection("reports").find({}).toArray(),
-    database.collection("verifications").find({}).toArray()
+    database.collection("verifications").find({}).toArray(),
+    database.collection("notifications").find({}).toArray(),
+    database.collection("connections").find({}).toArray()
   ]);
   const db = readDbShape({
     users: users.map(({ _id, ...rest }) => rest),
@@ -292,7 +298,9 @@ async function loadDb() {
     bookings: bookings.map(({ _id, ...rest }) => rest),
     inspections: inspections.map(({ _id, ...rest }) => rest),
     reports: reports.map(({ _id, ...rest }) => rest),
-    verifications: verifications.map(({ _id, ...rest }) => rest)
+    verifications: verifications.map(({ _id, ...rest }) => rest),
+    notifications: notifications.map(({ _id, ...rest }) => rest),
+    connections: connections.map(({ _id, ...rest }) => rest)
   });
   return db;
 }
@@ -313,7 +321,9 @@ async function persistDb(db) {
     bookings: db.bookings || [],
     inspections: db.inspections || [],
     reports: db.reports || [],
-    verifications: db.verifications || []
+    verifications: db.verifications || [],
+    notifications: db.notifications || [],
+    connections: db.connections || []
   };
   const stableId = (name, item) => item.id
     || item.token
@@ -340,6 +350,8 @@ function readDbShape(db) {
   db.inspections ||= [];
   db.reports ||= [];
   db.verifications ||= [];
+  db.notifications ||= [];
+  db.connections ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
   const demoCoords = { lst_palm:[6.5158,3.3898], lst_maple:[7.4433,3.9008], lst_green:[6.8683,7.4064], lst_cedar:[7.5180,4.5230] };
   db.listings.forEach(listing => {
@@ -389,6 +401,53 @@ function profileView(account) {
     budget: Number(account.budget || 0),
     memberSince: account.createdAt || null
   };
+}
+
+// Real connection state between two accounts, derived from the connections collection.
+function connectionStateFor(db, viewerId, otherId) {
+  const link = db.connections.find(item =>
+    (item.requesterId === viewerId && item.recipientId === otherId) ||
+    (item.requesterId === otherId && item.recipientId === viewerId));
+  if (!link) return { state: "none", connectionId: null };
+  if (link.status === "accepted") return { state: "connected", connectionId: link.id };
+  return link.requesterId === viewerId
+    ? { state: "outgoing", connectionId: link.id }
+    : { state: "incoming", connectionId: link.id };
+}
+
+// Central notification writer. Every real user-facing event funnels through here.
+function notify(db, userId, notification) {
+  if (!userId || !db.users.some(user => user.id === userId)) return;
+  db.notifications.unshift({
+    id: id("ntf"), read: false, createdAt: new Date().toISOString(),
+    ...notification, userId
+  });
+  const mine = db.notifications.filter(item => item.userId === userId);
+  if (mine.length > 60) {
+    const drop = new Set(mine.slice(60).map(item => item.id));
+    db.notifications = db.notifications.filter(item => !drop.has(item.id));
+  }
+}
+
+function unreadMessageTotal(db, userId) {
+  return db.conversations.reduce((sum, conversation) => {
+    if (!conversation.memberIds.includes(userId)) return sum;
+    const readUpTo = conversation.reads?.[userId] || EPOCH;
+    return sum + db.messages.filter(message => message.conversationId === conversation.id && message.senderId !== userId && message.createdAt > readUpTo).length;
+  }, 0);
+}
+
+function notificationPayload(item, db) {
+  const actor = db.users.find(user => user.id === item.actorId);
+  return { ...item, actor: actor ? { id: actor.id, name: actor.name } : null };
+}
+
+// Single source of truth for people ranking: university + habits + budget overlap.
+function matchScoreFor(db, account, candidate) {
+  const sameUniversity = candidate.university === account.university;
+  const sharedHabits = (candidate.habits || []).filter(habit => (account.habits || []).includes(habit)).length;
+  const budgetClose = account.budget && candidate.budget ? Math.abs(account.budget - candidate.budget) <= 150000 : false;
+  return Math.min(98, 62 + (sameUniversity ? 20 : 0) + sharedHabits * 5 + (budgetClose ? 6 : 0));
 }
 
 function parseCookies(req) {
@@ -509,6 +568,8 @@ function removeUserFromDb(db, userId) {
   db.inspections = db.inspections.filter(item => item.tenantId !== userId && item.ownerId !== userId);
   db.reports = db.reports.filter(item => item.reportedBy !== userId);
   db.verifications = db.verifications.filter(item => item.userId !== userId);
+  db.notifications = db.notifications.filter(item => item.userId !== userId);
+  db.connections = db.connections.filter(item => item.requesterId !== userId && item.recipientId !== userId);
   const removedConversations = new Set(
     db.conversations.filter(conversation => conversation.memberIds.includes(userId)).map(conversation => conversation.id)
   );
@@ -612,21 +673,21 @@ async function api(req, res, url) {
     const inspections = user ? db.inspections.filter(item => item.tenantId === user.id || item.ownerId === user.id) : [];
     const roommateCandidates = user && user.role === "tenant" ? db.users
       .filter(item => item.id !== user.id && (item.role === "tenant" || item.hosting === true))
-      .map(candidate => {
-        const sameUniversity = candidate.university === user.university;
-        const sharedHabits = (candidate.habits || []).filter(habit => (user.habits || []).includes(habit)).length;
-        const budgetClose = user.budget && candidate.budget ? Math.abs(user.budget-candidate.budget)<=150000 : false;
-        return {...profileView(candidate), score:Math.min(98,62+(sameUniversity?20:0)+(sharedHabits*5)+(budgetClose?6:0))};
-      }).sort((a,b)=>b.score-a.score) : [];
+      .map(candidate => ({ ...profileView(candidate), score: matchScoreFor(db, user, candidate), connection: connectionStateFor(db, user.id, candidate.id) }))
+      .sort((a,b)=>b.score-a.score) : [];
     const verification = user ? db.verifications.filter(item => item.userId === user.id).at(-1) || null : null;
     const people = user ? db.users
       .filter(item => item.id !== user.id && (item.role === "tenant" || item.hosting === true))
-      .map(item => profileView(item))
-      .sort((a,b) => (a.university === user.university ? -1 : 1) - (b.university === user.university ? -1 : 1)) : [];
+      .map(item => ({ ...profileView(item), score: matchScoreFor(db, user, item), connection: connectionStateFor(db, user.id, item.id) }))
+      .sort((a,b) => b.score - a.score) : [];
+    const myNotifications = user ? db.notifications.filter(item => item.userId === user.id) : [];
     return json(res, 200, {
       user: publicUser(user),
       universities: [...new Set(universities)].sort((a,b)=>a.localeCompare(b)),
       listings, ownListings, conversations, bookings, inspections, roommateCandidates, verification, people,
+      notifications: myNotifications.slice(0, 30).map(item => notificationPayload(item, db)),
+      notificationsUnread: myNotifications.filter(item => !item.read).length,
+      unreadMessages: user ? unreadMessageTotal(db, user.id) : 0,
       paymentsEnabled: Boolean(PAYSTACK_SECRET_KEY)
     });
   }
@@ -651,6 +712,7 @@ async function api(req, res, url) {
     db.users.push(newUser);
     const token = id("ses");
     db.sessions.push({token,userId:newUser.id,expiresAt:Date.now()+SESSION_TTL});
+    notify(db, newUser.id, { type:"system", title:"Welcome to Offkay", body:"Add your university, budget, and lifestyle so roommates can find you.", actorId:null, meta:{} });
     await new Promise(resolve => setTimeout(resolve, 0));
     await persistDb(db);
     return json(res, 201, {user:publicUser(newUser)}, {"Set-Cookie":sessionCookie(req, token, 2592000)});
@@ -692,6 +754,17 @@ async function api(req, res, url) {
     return json(res, 200, {ok:true}, {"Set-Cookie":sessionCookie(req, "", 0)});
   }
 
+  if (route === "/api/account/password" && method === "POST") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const body = await parseBody(req);
+    if (!verifyPassword(String(body.currentPassword || ""), account.password)) return error(res, 403, "Your current password is incorrect");
+    const next = String(body.newPassword || "");
+    if (next.length < 8) return error(res, 400, "New password must be at least 8 characters");
+    account.password = hashPassword(next);
+    await persistDb(db);
+    return json(res, 200, {ok:true});
+  }
+
   if (route === "/api/profile" && method === "PATCH") {
     const account = requireUser(req,res,db); if (!account) return;
     const body = await parseBody(req);
@@ -701,6 +774,7 @@ async function api(req, res, url) {
     });
     if (body.budget !== undefined) account.budget = Math.max(0, Math.min(10_000_000, Number(body.budget) || 0));
     if (Array.isArray(body.habits)) account.habits = body.habits.slice(0,8).map(habit => String(habit).slice(0,40));
+    if (body.notifyMessages !== undefined) account.notifyMessages = body.notifyMessages === true;
     await persistDb(db);
     return json(res, 200, {user:publicUser(account)});
   }
@@ -736,7 +810,7 @@ async function api(req, res, url) {
     const body = await parseBody(req);
     if (!body.title || !body.area || !body.price) return error(res,400,"Title, area, and annual rent are required");
     const price = Number(body.price);
-    if (!Number.isFinite(price) || price < 10000) return error(res,400,"Enter an annual rent of at least ₦10,000");
+    if (!Number.isFinite(price) || price < 10000) return error(res,400,"Enter an annual rent of at least \u20A610,000");
     const listing = {
       id:id("lst"),ownerId:account.id,title:String(body.title).trim().slice(0,120),
       university:universities.includes(body.university) ? body.university : account.university,
@@ -806,6 +880,7 @@ async function api(req, res, url) {
       status:"requested",createdAt:new Date().toISOString()
     };
     db.inspections.push(inspection);
+    notify(db, listing.ownerId, { type:"inspection", title:"New inspection request", body:`${account.name} requested to inspect ${listing.title}.`, actorId:account.id, meta:{ inspectionId:inspection.id, listingId:listing.id } });
     await persistDb(db);
     return json(res,201,{inspection});
   }
@@ -851,6 +926,7 @@ async function api(req, res, url) {
       conversation = {id:id("con"),memberIds:[account.id,listing.ownerId],listingId:listing.id,updatedAt:new Date().toISOString(),reads:{}};
       db.conversations.push(conversation);
       db.messages.push({id:id("msg"),conversationId:conversation.id,senderId:account.id,text:`Hi, I am interested in ${listing.title}. Is it still available?`,createdAt:new Date().toISOString()});
+      notify(db, listing.ownerId, { type:"message", title:`New message from ${account.name}`, body:`Hi, I am interested in ${listing.title}. Is it still available?`, actorId:account.id, meta:{ conversationId:conversation.id } });
     }
     await persistDb(db);
     return json(res,200,{conversationId:conversation.id});
@@ -877,6 +953,10 @@ async function api(req, res, url) {
     db.messages.push(message);
     conversation.updatedAt = message.createdAt;
     conversation.reads[account.id] = message.createdAt;
+    const recipient = db.users.find(item => conversation.memberIds.includes(item.id) && item.id !== account.id);
+    if (recipient && recipient.notifyMessages !== false) {
+      notify(db, recipient.id, { type:"message", title:`New message from ${account.name}`, body:text.slice(0,120), actorId:account.id, meta:{ conversationId:conversation.id } });
+    }
     await persistDb(db);
     return json(res,201,{message});
   }
@@ -895,12 +975,11 @@ async function api(req, res, url) {
       }
       return true;
     });
-    const people = visible.map(item => {
-      const sameUniversity = item.university === account.university;
-      const sharedHabits = (item.habits || []).filter(habit => (account.habits || []).includes(habit)).length;
-      const budgetClose = account.budget && item.budget ? Math.abs(account.budget-item.budget)<=150000 : false;
-      return {...profileView(item), score:Math.min(98,62+(sameUniversity?20:0)+(sharedHabits*5)+(budgetClose?6:0))};
-    }).sort((a,b)=>b.score-a.score).slice(0, 60);
+    const people = visible.map(item => ({
+      ...profileView(item),
+      score: matchScoreFor(db, account, item),
+      connection: connectionStateFor(db, account.id, item.id)
+    })).sort((a,b)=>b.score-a.score).slice(0, 60);
     return json(res,200,{people});
   }
 
@@ -921,12 +1000,11 @@ async function api(req, res, url) {
   if (route === "/api/roommates" && method === "GET") {
     const account = requireUser(req,res,db); if (!account) return;
     if (account.role !== "tenant") return json(res,200,{matches:[]});
-    const matches = db.users.filter(item => item.id !== account.id && (item.role === "tenant" || item.hosting === true)).map(candidate => {
-      const sameUniversity = candidate.university === account.university;
-      const sharedHabits = (candidate.habits || []).filter(habit => (account.habits || []).includes(habit)).length;
-      const budgetClose = account.budget && candidate.budget ? Math.abs(account.budget-candidate.budget)<=150000 : false;
-      return {...profileView(candidate),score:Math.min(98,62+(sameUniversity?20:0)+(sharedHabits*5)+(budgetClose?6:0))};
-    }).sort((a,b)=>b.score-a.score);
+    const matches = db.users.filter(item => item.id !== account.id && (item.role === "tenant" || item.hosting === true)).map(candidate => ({
+      ...profileView(candidate),
+      score: matchScoreFor(db, account, candidate),
+      connection: connectionStateFor(db, account.id, candidate.id)
+    })).sort((a,b)=>b.score-a.score);
     return json(res,200,{matches});
   }
 
@@ -940,6 +1018,9 @@ async function api(req, res, url) {
       conversation = {id:id("con"),memberIds:[account.id,candidate.id],listingId:null,updatedAt:new Date().toISOString(),reads:{}};
       db.conversations.push(conversation);
       db.messages.push({id:id("msg"),conversationId:conversation.id,senderId:account.id,text:"Hi! Offkay matched us as potential roommates. Would you like to chat?",createdAt:new Date().toISOString()});
+      if (candidate.notifyMessages !== false) {
+        notify(db, candidate.id, { type:"message", title:`New message from ${account.name}`, body:"Hi! Offkay matched us as potential roommates. Would you like to chat?", actorId:account.id, meta:{ conversationId:conversation.id } });
+      }
     }
     await persistDb(db);
     return json(res,200,{conversationId:conversation.id});
@@ -950,7 +1031,101 @@ async function api(req, res, url) {
     const account = requireUser(req,res,db); if (!account) return;
     const target = db.users.find(item => item.id === userMatch[1]);
     if (!target) return error(res,404,"User not found");
-    return json(res,200,{user:profileView(target)});
+    return json(res,200,{ user: { ...profileView(target), score: matchScoreFor(db, account, target), connection: connectionStateFor(db, account.id, target.id) } });
+  }
+
+  // ---- Connections: real pending/accepted links between accounts ----
+  if (route === "/api/connections" && method === "GET") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const links = db.connections.filter(item => item.requesterId === account.id || item.recipientId === account.id);
+    const withPeople = links.map(link => {
+      const otherId = link.requesterId === account.id ? link.recipientId : link.requesterId;
+      const other = db.users.find(item => item.id === otherId);
+      return { ...link, direction: link.requesterId === account.id ? "outgoing" : "incoming", person: profileView(other) };
+    }).filter(link => link.person);
+    return json(res,200,{ connections: withPeople });
+  }
+
+  if (route === "/api/connections" && method === "POST") {
+    const account = requireUser(req,res,db); if (!account) return;
+    if (!rateLimit(`user:${account.id}:connect`, 40, 3_600_000)) return error(res, 429, "Too many connection attempts. Try again later.");
+    const body = await parseBody(req);
+    const target = db.users.find(item => item.id === body.userId);
+    if (!target) return error(res,404,"User not found");
+    if (target.id === account.id) return error(res,400,"You cannot connect with yourself");
+    const existing = db.connections.find(item =>
+      (item.requesterId === account.id && item.recipientId === target.id) ||
+      (item.requesterId === target.id && item.recipientId === account.id));
+    if (existing && existing.status === "accepted") return json(res,200,{ connection: existing, state: "connected" });
+    if (existing && existing.requesterId === account.id) return json(res,200,{ connection: existing, state: "outgoing" });
+    if (existing && existing.recipientId === account.id) {
+      existing.status = "accepted";
+      existing.acceptedAt = new Date().toISOString();
+      notify(db, existing.requesterId, { type:"connection_accepted", title:"Connection accepted", body:`${account.name} accepted your connection request.`, actorId:account.id, meta:{ connectionId:existing.id } });
+      await persistDb(db);
+      return json(res,200,{ connection: existing, state: "connected" });
+    }
+    const link = { id:id("cnx"), requesterId:account.id, recipientId:target.id, status:"pending", createdAt:new Date().toISOString() };
+    db.connections.push(link);
+    notify(db, target.id, { type:"connection", title:"New connection request", body:`${account.name} wants to connect with you.`, actorId:account.id, meta:{ connectionId:link.id } });
+    await persistDb(db);
+    return json(res,201,{ connection: link, state: "outgoing" });
+  }
+
+  const connectionAction = route.match(/^\/api\/connections\/([^/]+)\/(accept|decline)$/);
+  if (connectionAction && method === "POST") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const link = db.connections.find(item => item.id === connectionAction[1]);
+    if (!link || (link.requesterId !== account.id && link.recipientId !== account.id)) return error(res,404,"Connection not found");
+    if (connectionAction[2] === "accept") {
+      if (link.recipientId !== account.id) return error(res,403,"Only the recipient can accept this request");
+      if (link.status !== "accepted") {
+        link.status = "accepted";
+        link.acceptedAt = new Date().toISOString();
+        notify(db, link.requesterId, { type:"connection_accepted", title:"Connection accepted", body:`${account.name} accepted your connection request.`, actorId:account.id, meta:{ connectionId:link.id } });
+        await persistDb(db);
+      }
+      return json(res,200,{ connection: link, state: "connected" });
+    }
+    // decline: recipient declines, or requester cancels their own pending request
+    db.connections = db.connections.filter(item => item.id !== link.id);
+    await persistDb(db);
+    return json(res,200,{ ok:true, state:"none" });
+  }
+
+  // ---- Notifications: real per-user feed with read state ----
+  if (route === "/api/notifications" && method === "GET") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const mine = db.notifications.filter(item => item.userId === account.id);
+    return json(res,200,{
+      notifications: mine.slice(0, 50).map(item => notificationPayload(item, db)),
+      unread: mine.filter(item => !item.read).length
+    });
+  }
+
+  if (route === "/api/notifications/read" && method === "POST") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const body = await parseBody(req);
+    const ids = Array.isArray(body.ids) ? body.ids.map(String).slice(0, 100) : null;
+    let changed = 0;
+    db.notifications.forEach(item => {
+      if (item.userId !== account.id || item.read) return;
+      if (ids && !ids.includes(item.id)) return;
+      item.read = true;
+      changed++;
+    });
+    if (changed) await persistDb(db);
+    const mine = db.notifications.filter(item => item.userId === account.id);
+    return json(res,200,{ ok:true, marked: changed, unread: mine.filter(item => !item.read).length });
+  }
+
+  // ---- Lightweight badge poll: real unread counts, no render data ----
+  if (route === "/api/badges" && method === "GET") {
+    const account = requireUser(req,res,db); if (!account) return;
+    return json(res,200,{
+      messages: unreadMessageTotal(db, account.id),
+      notifications: db.notifications.filter(item => item.userId === account.id && !item.read).length
+    });
   }
 
   if (route === "/api/bookings" && method === "POST") {
@@ -975,6 +1150,7 @@ async function api(req, res, url) {
       status:"awaiting_payment",createdAt:new Date().toISOString()
     };
     db.bookings.push(booking);
+    notify(db, listing.ownerId, { type:"booking", title:"New booking request", body:`${account.name} started a booking for ${listing.title}.`, actorId:account.id, meta:{ bookingId:booking.id, listingId:listing.id } });
     await persistDb(db);
     return json(res,201,{booking});
   }
@@ -992,6 +1168,7 @@ async function api(req, res, url) {
       booking.status = "paid";
       booking.paidAt = new Date().toISOString();
       booking.reference = `HH-${Date.now()}`;
+      notify(db, booking.ownerId, { type:"payment", title:"Booking fully paid", body:`${account.name} completed payment for a booking.`, actorId:account.id, meta:{ bookingId:booking.id } });
     }
     await persistDb(db);
     return json(res,200,{booking});
@@ -1106,6 +1283,7 @@ async function api(req, res, url) {
       booking.paidAt = new Date(transaction.paid_at || Date.now()).toISOString();
       booking.reference = expectedRef;
       booking.paystackTransactionId = transaction.id;
+      notify(db, booking.ownerId, { type:"payment", title:"Booking fully paid", body:`${account.name} completed payment for a booking.`, actorId:account.id, meta:{ bookingId:booking.id } });
     }
     await persistDb(db);
     return json(res, 200, { booking });
@@ -1139,6 +1317,7 @@ async function api(req, res, url) {
             booking.paidAt = new Date(event.data.paid_at || Date.now()).toISOString();
             booking.reference = refText;
             booking.paystackTransactionId = event.data.id;
+            notify(db, booking.ownerId, { type:"payment", title:"Booking fully paid", body:"All shares are confirmed for a booking on your property.", actorId:booking.tenantId, meta:{ bookingId:booking.id } });
           }
           await persistDb(db);
         }

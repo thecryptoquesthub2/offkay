@@ -10,12 +10,17 @@
   conversations: [],
   bookings: [],
   inspections: [],
+  notifications: [],
+  notificationsUnread: 0,
+  unreadMessages: 0,
+  settingsView: false,
   activeTab: "home",
   activeConversation: null,
   messages: [],
   filters: {
     homes: { query: "", university: "", type: "All", maxPrice: "", bedrooms: "", verified: false },
-    roommates: { query: "", university: "", maxBudget: "", habit: "", verified: false }
+    roommates: { query: "", university: "", maxBudget: "", habit: "", verified: false },
+    people: { query: "", university: "", connected: false }
   },
   exploreMode: "homes",
   hostView: localStorage.getItem("offkay-host-view") === "true",
@@ -38,9 +43,7 @@ const mapUrl = listing => {
 const icon = name => `<svg class="off-icon" aria-hidden="true"><use href="/offkay-icons.svg#${name}"></use></svg>`;
 const canHost = () => state.user?.role === "landlord" || state.user?.hosting === true;
 const inHostView = () => canHost() && state.hostView;
-const unreadTotal = () => state.conversations.reduce((sum,item)=>sum+(Number(item.unread)||0),0);
-
-const KNOWN_THEMES = ["offkay","forest","slate","clay","midnight"];
+const unreadTotal = () => state.conversations.reduce((sum,item)=>sum+(Number(item.unread)||0),0);const KNOWN_THEMES = ["offkay","forest","slate","clay","midnight"];
 
 function applyTheme(theme) {
   if (!KNOWN_THEMES.includes(theme)) theme = "offkay";
@@ -102,6 +105,7 @@ function modal(content, wide = false) {
 function closeModal() {
   $("#modalRoot").classList.remove("open");
   $("#modalRoot").innerHTML = "";
+  state.openProfileId = null;
 }
 
 function setAuthMode(mode) {
@@ -174,6 +178,7 @@ function enterApp() {
   $("#topName").textContent = firstName(state.user.name);
   $("#topRole").textContent = inHostView() ? "Host" : "Guest";
   renderNotificationDot();
+  startBadgePolling();
   $("#sidebarCard").innerHTML = inHostView()
     ? `<span>Grow your portfolio</span><strong>Publish a verified property in minutes.</strong><button class="button light small" data-action="new-listing">Add property</button>`
     : `<span>Roommate Match</span><strong>Living is easier with the right person.</strong><button class="button light small" data-action="open-matches">Find a match</button>`;
@@ -181,10 +186,100 @@ function enterApp() {
 }
 
 function renderNotificationDot() {
+  const messageCount = Number(state.unreadMessages) || unreadTotal();
+  $(".msg-badge").forEach(node => {
+    node.textContent = messageCount > 99 ? "99+" : String(messageCount);
+    node.hidden = messageCount === 0;
+  });
+  const notifCount = Number(state.notificationsUnread) || 0;
+  $(".notif-badge").forEach(node => {
+    node.textContent = notifCount > 99 ? "99+" : String(notifCount);
+    node.hidden = notifCount === 0;
+  });
   const dot = $("#notificationButton i");
-  if (dot) dot.style.display = unreadTotal() ? "block" : "none";
-  const badge = $("#messageBadge");
-  if (badge) badge.style.display = unreadTotal() ? "block" : "none";
+  if (dot) dot.style.display = notifCount ? "block" : "none";
+}
+
+let badgePoll = null;
+function startBadgePolling() {
+  stopBadgePolling();
+  if (!state.user) return;
+  badgePoll = setInterval(async () => {
+    if (!state.user || document.hidden) return;
+    try {
+      const data = await request("/api/badges");
+      const changed = data.messages !== state.unreadMessages || data.notifications !== state.notificationsUnread;
+      state.unreadMessages = data.messages;
+      state.notificationsUnread = data.notifications;
+      renderNotificationDot();
+      if (changed) refreshData(false).catch(() => {});
+    } catch { /* transient network errors stay silent */ }
+  }, 8000);
+}
+function stopBadgePolling() {
+  clearInterval(badgePoll);
+  badgePoll = null;
+}
+
+const notificationGlyph = type => ({message:"&#9993;",connection:"&#9826;",connection_accepted:"&#10003;",inspection:"&#128197;",booking:"&#8962;",payment:"&#10003;",system:"&#9737;"}[type] || "&#9737;");
+
+function notificationRow(item) {
+  return `<button class="notification-row ${item.read ? "" : "unread"}" data-action="open-notification" data-id="${item.id}" data-type="${esc(item.type)}" data-ref="${esc(item.meta?.conversationId || item.meta?.listingId || item.meta?.bookingId || "")}">
+    <span class="notification-glyph">${notificationGlyph(item.type)}</span>
+    <span class="notification-copy"><b>${esc(item.title)}</b><small>${esc(item.body || "")}</small><time>${new Date(item.createdAt).toLocaleString("en-NG",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}</time></span>
+    ${item.read ? "" : `<i class="unread-pip"></i>`}
+  </button>`;
+}
+
+async function openNotifications() {
+  if (!state.user) return;
+  try {
+    const data = await request("/api/notifications");
+    state.notifications = data.notifications;
+    state.notificationsUnread = data.unread;
+  } catch (error) { return toast(error.message); }
+  const unreadIds = state.notifications.filter(item => !item.read).map(item => item.id);
+  modal(`
+    <div class="modal-head"><div><span class="eyebrow">Notifications</span><h2>Activity</h2><p>Connection requests, messages, inspections, and booking updates.</p></div><button class="close-button">&times;</button></div>
+    <div class="notification-list">${state.notifications.length ? state.notifications.map(notificationRow).join("") : emptyState("Nothing yet","Requests, messages, and booking updates will land here.")}</div>
+    ${state.notifications.length ? `<button class="button subtle wide" data-action="mark-notifications-read">Mark all as read</button>` : ""}`);
+  renderNotificationDot();
+  if (unreadIds.length) {
+    request("/api/notifications/read",{method:"POST",body:JSON.stringify({ids:unreadIds})})
+      .then(() => { state.notificationsUnread = 0; renderNotificationDot(); })
+      .catch(() => {});
+  }
+}
+
+async function markNotificationsRead() {
+  try {
+    await request("/api/notifications/read",{method:"POST",body:JSON.stringify({})});
+    state.notifications = state.notifications.map(item => ({ ...item, read: true }));
+    state.notificationsUnread = 0;
+    renderNotificationDot();
+    document.querySelectorAll(".notification-row").forEach(row => { row.classList.remove("unread"); row.querySelector(".unread-pip")?.remove(); });
+    document.querySelector('[data-action="mark-notifications-read"]')?.remove();
+  } catch (error) { toast(error.message); }
+}
+
+function openNotificationDeepLink(node) {
+  const type = node.dataset.type;
+  const ref = node.dataset.ref;
+  if (type === "message" && ref) {
+    closeModal();
+    state.activeConversation = ref;
+    switchTab("messages");
+    return;
+  }
+  if (type === "connection" || type === "connection_accepted") {
+    closeModal();
+    state.exploreMode = "people";
+    switchTab("explore");
+    return;
+  }
+  if (type === "inspection") { closeModal(); inspectionsSheet(); return; }
+  if (type === "booking" || type === "payment") { closeModal(); state.settingsView = false; switchTab("profile"); return; }
+  closeModal();
 }
 
 function renderAll() {
@@ -196,9 +291,10 @@ function renderAll() {
 }
 
 function switchTab(tab, render = true) {
+  if (tab !== "profile") state.settingsView = false;
   state.activeTab = tab;
   $$(".tab").forEach(node => node.classList.toggle("active", node.id === `tab-${tab}`));
-  $$("[data-tab]").forEach(node => node.classList.toggle("active", node.dataset.tab === tab));
+  $("[data-tab]").forEach(node => node.classList.toggle("active", node.dataset.tab === tab));
   if (render) {
     if (tab === "messages") renderMessages();
     if (tab === "explore") renderExplore();
@@ -334,13 +430,14 @@ function renderExplore() {
   const roommates = filteredRoommates();
   const hosting = inHostView();
   const browsingRoommates = state.exploreMode === "roommates";
+  const browsingPeople = state.exploreMode === "people";
   const homeFilters = state.filters.homes;
   const roommateFilters = state.filters.roommates;
   const habitOptions = ["Very tidy","Night owl","Early bird","Quiet home","Social","Non-smoker","Cooks often","Pet friendly"];
   $("#tab-explore").innerHTML = `
     <div class="page-head"><div><span class="eyebrow">${hosting?"Host tools":"Explore Offkay"}</span><h1>${hosting?"Manage your places.":"Find a home, then find your people."}</h1><p>${hosting?"Review your properties and incoming inspection requests.":"Search verified homes and compatible roommates with filters made for each."}</p></div><div class="page-actions"><button class="button subtle" data-action="open-inspections">${icon("calendar")} Inspections</button>${hosting?`<button class="button primary" data-action="new-listing">${icon("plus")} Add a house</button>`:""}</div></div>
-    ${hosting ? "" : `<div class="liquid-segment" aria-label="Explore view"><button class="${state.exploreMode==="homes"?"active":""}" data-action="explore-mode" data-mode="homes">Homes</button><button class="${state.exploreMode==="map"?"active":""}" data-action="explore-mode" data-mode="map">Map</button><button class="${browsingRoommates?"active":""}" data-action="explore-mode" data-mode="roommates">Roommates</button></div>`}
-    ${hosting ? `<div class="section-head"><div><h2>Your properties</h2><p>Published places and verification status. Hide or delete test listings when you are done.</p></div></div>${propertyTable(state.ownListings)}` : browsingRoommates ? `
+    ${hosting ? "" : `<div class="liquid-segment" aria-label="Explore view"><button class="${state.exploreMode==="homes"?"active":""}" data-action="explore-mode" data-mode="homes">Homes</button><button class="${state.exploreMode==="map"?"active":""}" data-action="explore-mode" data-mode="map">Map</button><button class="${browsingRoommates?"active":""}" data-action="explore-mode" data-mode="roommates">Roommates</button><button class="${browsingPeople?"active":""}" data-action="explore-mode" data-mode="people">People</button></div>`}
+    ${hosting ? `<div class="section-head"><div><h2>Your properties</h2><p>Published places and verification status. Hide or delete test listings when you are done.</p></div></div>${propertyTable(state.ownListings)}` : browsingPeople ? peopleSection() : browsingRoommates ? `
       <div class="filter-panel glass">
         <div class="filter-panel-head"><div><b>Find a roommate</b><small>Match by campus, budget, lifestyle, and verification.</small></div><button class="link-button" data-action="reset-roommate-filters">Clear</button></div>
         <div class="filter-bar roommate-filter-bar">
@@ -406,14 +503,115 @@ function conversationRow(conversation) {
   </button>`;
 }
 
+function connectButton(person, normal = false) {
+  const link = person.connection || { state: "none" };
+  const size = normal ? "" : " small";
+  if (link.state === "connected") return `<button class="button light${size}" disabled>&#10003; Connected</button>`;
+  if (link.state === "outgoing") return `<button class="button subtle${size}" data-action="decline-connect" data-id="${link.connectionId || person.id}" title="Withdraw request">Request sent</button>`;
+  if (link.state === "incoming") return `<button class="button primary${size}" data-action="accept-connect" data-id="${link.connectionId || person.id}">Accept request</button>`;
+  return `<button class="button subtle${size}" data-action="send-connect" data-id="${person.id}">Connect</button>`;
+}
+
 function personRow(person) {
   return `<div class="person-row">
-    <button class="person-main" data-action="view-roommate" data-id="${person.id}">
+    <button class="person-main" data-action="open-user-profile" data-id="${person.id}">
       <span class="avatar">${initials(person.name)}</span>
       <span class="conversation-text"><b>${esc(person.name)}</b><span>${esc(person.university || "Offkay")}${person.bio ? ` · ${esc(person.bio.slice(0,60))}${person.bio.length>60?"…":""}` : ""}</span></span>
     </button>
     <button class="button subtle small" data-action="start-chat" data-id="${person.id}">Message</button>
+    ${connectButton(person)}
   </div>`;
+}
+
+function peopleSection() {
+  const people = state.people || [];
+  const filters = state.filters.people;
+  const query = filters.query.trim().toLowerCase();
+  const visible = people.filter(person => {
+    if (filters.university && person.university !== filters.university) return false;
+    if (filters.connected && person.connection?.state !== "connected") return false;
+    if (query && !`${person.name} ${person.university || ""} ${person.bio || ""} ${(person.habits || []).join(" ")}`.toLowerCase().includes(query)) return false;
+    return true;
+  });
+  return `
+    <div class="filter-panel glass">
+      <div class="filter-panel-head"><div><b>Discover people</b><small>Real Offkay members, closest matches first — same campus, shared habits, and budget overlap rank higher.</small></div><button class="link-button" data-action="reset-people-filters">Clear</button></div>
+      <div class="filter-bar people-filter-bar">
+        <label class="filter-field"><span>&#8981;</span><input data-filter="people-query" value="${esc(filters.query)}" placeholder="Name, bio, or lifestyle"></label>
+        <label class="filter-field"><span>&#8982;</span><select data-filter="people-university"><option value="">All universities</option>${state.universities.map(name=>`<option value="${esc(name)}" ${filters.university===name?"selected":""}>${esc(name)}</option>`).join("")}</select></label>
+        <label class="check-filter"><input type="checkbox" data-filter="people-connected" ${filters.connected?"checked":""}><span>Connections only</span></label>
+      </div>
+    </div>
+    <div class="section-head"><div><h2>${visible.length} ${visible.length===1?"person":"people"}</h2><p>Open a profile to see bio, lifestyle, and connection state.</p></div></div>
+    <div class="people-directory">${visible.map(personCard).join("") || emptyState("No one matches yet","Try clearing a filter — new members appear here as they join Offkay.")}</div>`;
+}
+
+function personCard(person) {
+  return `<article class="roommate-card glass person-card">
+    <button class="roommate-avatar" data-action="open-user-profile" data-id="${person.id}" aria-label="Open profile">${initials(person.name)}</button>
+    <div class="roommate-copy">
+      <div><h3><a href="#" data-action="open-user-profile" data-id="${person.id}" class="person-name-link">${esc(person.name)}</a></h3><span>${person.score ? `${person.score}% match` : (person.connection?.state === "connected" ? "Connected" : esc(person.university || ""))}</span></div>
+      <p>${esc(person.bio || "This member has not added a bio yet.")}</p>
+      <div class="amenities">${(person.habits || []).slice(0,3).map(habit=>`<span class="amenity">${esc(habit)}</span>`).join("")}${person.verified?`<span class="amenity verify-amenity">&#10003; Verified</span>`:""}${person.university?`<span class="amenity">${esc(person.university)}</span>`:""}</div>
+    </div>
+    <div class="roommate-actions">
+      ${connectButton(person, true)}
+      <button class="button subtle" data-action="start-chat" data-id="${person.id}">Message</button>
+    </div>
+  </article>`;
+}
+
+async function openUserProfile(id) {
+  try {
+    const data = await request(`/api/users/${encodeURIComponent(id)}`);
+    const person = data.user;
+    if (!person) throw new Error("Profile not found");
+    state.openProfileId = person.id;
+    modal(`
+      <div class="modal-head"><div><span class="eyebrow">${person.verified ? "&#10003; Verified member" : "Offkay member"}${person.score ? ` · ${person.score}% match` : ""}</span><h2>${esc(person.name)}</h2><p>${esc(person.university || "Offkay")}${person.hosting ? " · Host" : " · Student"}</p></div><button class="close-button">&times;</button></div>
+      <div class="public-profile">
+        <div class="profile-hero-mini">
+          <span class="avatar large">${initials(person.name)}</span>
+          <div class="profile-hero-facts">
+            ${person.connection?.state === "connected" ? `<span class="verified-line">&#10003; Connected</span>` : ""}
+            <small>Member since ${person.memberSince ? new Date(person.memberSince).toLocaleDateString("en-NG",{month:"long",year:"numeric"}) : "recently"}</small>
+          </div>
+        </div>
+        <h3>About</h3>
+        <p>${esc(person.bio || "This member has not written an about section yet.")}</p>
+        ${person.habits?.length ? `<h3>Lifestyle</h3><div class="amenities">${person.habits.map(habit=>`<span class="amenity">${esc(habit)}</span>`).join("")}</div>` : ""}
+        ${person.budget ? `<h3>Budget</h3><div class="cost-row"><span>Annual budget ceiling</span><b>${money(person.budget)}</b></div>` : ""}
+        <div class="detail-actions">
+          ${connectButton(person, true)}
+          <button class="button subtle" data-action="start-chat" data-id="${person.id}">Message</button>
+        </div>
+        <p class="share-hint">Only profile details this member chose to share are shown. Contact details stay private until they reply.</p>
+      </div>`);
+  } catch (error) { toast(error.message); }
+}
+
+async function sendConnect(id, button) {
+  if (button) setLoading(button, true, "Sending...");
+  try {
+    await request("/api/connections",{method:"POST",body:JSON.stringify({userId:id})});
+    await refreshData(false);
+    toast("Connection request sent");
+    if (state.openProfileId === id) openUserProfile(id);
+    else renderExplore();
+  } catch (error) { toast(error.message); }
+  finally { if (button) setLoading(button, false); }
+}
+
+async function respondConnect(connectionId, accept, button) {
+  if (button) setLoading(button, true, accept ? "Accepting..." : "Removing...");
+  try {
+    await request(`/api/connections/${encodeURIComponent(connectionId)}/${accept ? "accept" : "decline"}`,{method:"POST"});
+    await refreshData(false);
+    toast(accept ? "You are now connected" : "Request removed");
+    if (state.openProfileId) openUserProfile(state.openProfileId);
+    else renderExplore();
+  } catch (error) { toast(error.message); }
+  finally { if (button) setLoading(button, false); }
 }
 
 function renderMessages() {
@@ -454,7 +652,7 @@ function renderMessages() {
 
 function chatMarkup(conversation) {
   return `<section class="chat">
-    <header class="chat-head"><button class="icon-more mobile-chat-back" data-action="back-to-conversations">&larr;</button><button class="chat-head-user" data-action="view-roommate" data-id="${conversation.other?.id || ""}"><span class="avatar">${initials(conversation.other?.name)}</span><span><b>${esc(conversation.other?.name)}</b><small>${conversation.other?.verified?"&#10003; Verified user":"Offkay member"}</small></span></button>${conversation.listingTitle ? `<span class="chat-listing-tag">${esc(conversation.listingTitle)}</span>` : ""}</header>
+    <header class="chat-head"><button class="icon-more mobile-chat-back" data-action="back-to-conversations">&larr;</button><button class="chat-head-user" data-action="open-user-profile" data-id="${conversation.other?.id || ""}"><span class="avatar">${initials(conversation.other?.name)}</span><span><b>${esc(conversation.other?.name)}</b><small>${conversation.other?.verified?"&#10003; Verified user":"Offkay member"}</small></span></button>${conversation.listingTitle ? `<span class="chat-listing-tag">${esc(conversation.listingTitle)}</span>` : ""}</header>
     <div class="chat-messages" id="chatMessages"><div class="no-chat">Loading messages...</div></div>
     <form class="chat-compose" id="messageForm"><input name="text" autocomplete="off" placeholder="Write a message..." required><button class="send-button" aria-label="Send">&uarr;</button></form>
   </section>`;
@@ -521,12 +719,14 @@ async function sendMessage(event) {
 }
 
 function renderProfile() {
+  if (state.settingsView) return renderSettings();
   const tenant = state.user.role === "tenant";
   const mine = state.listings.filter(item=>item.ownerId===state.user.id).length;
   const paid = state.bookings.filter(item=>item.status==="paid").length;
+  const connections = (state.people || []).filter(item => item.connection?.state === "connected").length;
   const habits = ["Very tidy","Night owl","Early bird","Quiet home","Social","Non-smoker","Cooks often","Pet friendly"];
   $("#tab-profile").innerHTML = `
-    <div class="page-head"><div><span class="eyebrow">Account settings</span><h1>Profile, trust & preferences</h1><p>Manage your profile, verification, guest preferences, and hosting from one place.</p></div><div class="page-actions"><button class="button subtle" data-action="open-settings">${icon("settings")} More settings</button></div></div>
+    <div class="page-head"><div><span class="eyebrow">My profile</span><h1>Profile, trust & preferences</h1><p>Your public profile, verification, bookings, and account controls.</p></div><div class="page-actions"><button class="button subtle" data-action="open-settings">${icon("settings")} Settings</button></div></div>
     <div class="profile-grid">
       <aside class="profile-card glass">
         <span class="avatar large">${initials(state.user.name)}</span>
@@ -535,11 +735,11 @@ function renderProfile() {
         <div class="profile-stats">
           <div class="profile-stat"><b>${tenant?state.listings.filter(item=>item.saved).length:mine}</b><span>${tenant?"SAVED HOMES":"PROPERTIES"}</span></div>
           <div class="profile-stat"><b>${paid}</b><span>CONFIRMED</span></div>
+          <div class="profile-stat"><b>${connections}</b><span>CONNECTIONS</span></div>
         </div>
         <div class="account-actions">
           <button class="settings-row" data-action="open-verification">${icon("verified")}<span><b>Verification</b><small>${esc(state.verification?.status || state.user.verificationStatus || (state.user.verified ? "verified" : "not submitted"))}</small></span><em>&rarr;</em></button>
-          <button class="settings-row" data-action="confirm-logout">${icon("settings")}<span><b>Sign out</b><small>End this session on this device</small></span><em>&rarr;</em></button>
-          <button class="settings-row" data-action="confirm-delete-account">${icon("settings")}<span><b>Delete my account</b><small>Permanently remove your profile and data</small></span><em>&rarr;</em></button>
+          <button class="settings-row" data-action="open-settings">${icon("settings")}<span><b>Settings</b><small>Account, notifications, personalization, privacy</small></span><em>&rarr;</em></button>
         </div>
       </aside>
       <form class="profile-form glass form-stack" id="profileForm">
@@ -555,6 +755,129 @@ function renderProfile() {
     <div class="section-head"><div><h2>Bookings &amp; payments</h2><p>Every booking on your account and its payment state.</p></div></div>
     ${bookingsList()}`;
   $("#profileForm").onsubmit = saveProfile;
+}
+
+function renderSettings() {
+  const notifyMessages = state.user.notifyMessages !== false;
+  $("#tab-profile").innerHTML = `
+    <div class="page-head"><div><span class="eyebrow">Settings</span><h1>Settings</h1><p>Account, notifications, personalization, privacy, and legal.</p></div><div class="page-actions"><button class="button subtle" data-action="back-to-profile">&larr; My profile</button></div></div>
+    <div class="settings-stack">
+      <div class="settings-group-label">Account</div>
+      <button class="settings-row" data-action="back-to-profile-edit">${icon("user")}<span><b>Edit profile details</b><small>Name, phone, university, bio, lifestyle</small></span><em>&rarr;</em></button>
+      <button class="settings-row" data-action="open-password">${icon("lock")}<span><b>Change password</b><small>Update the password you sign in with</small></span><em>&rarr;</em></button>
+      <button class="settings-row" data-action="open-verification">${icon("verified")}<span><b>Verification</b><small>${esc(state.verification?.status || state.user.verificationStatus || (state.user.verified ? "verified" : "not submitted"))}</small></span><em>&rarr;</em></button>
+      ${canHost() ? `<button class="settings-row" data-action="switch-view">${icon("home")}<span><b>${inHostView() ? "Switch to guest view" : "Switch to host view"}</b><small>Same account, different tools</small></span><em>${inHostView() ? "Host" : "Guest"}</em></button>` : `<button class="settings-row" data-action="activate-host">${icon("home")}<span><b>Become a host</b><small>List your property while keeping your tenant account</small></span><em>&rarr;</em></button>`}
+
+      <div class="settings-group-label">Notifications</div>
+      <div class="settings-row toggle-row">
+        <span><b>Message notifications</b><small>Add an activity notification for every new message</small></span>
+        <button class="toggle ${notifyMessages ? "on" : ""}" data-action="toggle-message-notifs" role="switch" aria-checked="${notifyMessages}"><i></i></button>
+      </div>
+      <button class="settings-row" data-action="open-notifications">${icon("messages")}<span><b>Notification history</b><small>Everything Offkay has notified you about</small></span><em>&rarr;</em></button>
+
+      <div class="settings-group-label">Personalization</div>
+      <div class="settings-themes">
+        ${["offkay","forest","slate","clay","midnight"].map(theme=>`<button class="theme-mini ${state.theme===theme?"active":""}" data-action="set-theme-settings" data-theme="${theme}">${theme[0].toUpperCase()+theme.slice(1)}</button>`).join("")}
+      </div>
+
+      <div class="settings-group-label">Privacy &amp; security</div>
+      <button class="settings-row" data-action="open-connections">${icon("group")}<span><b>My connections</b><small>People you are connected with on Offkay</small></span><em>&rarr;</em></button>
+      <button class="settings-row" data-action="logout-all-devices">${icon("lock")}<span><b>Sign out everywhere</b><small>End every session, including this device</small></span><em>&rarr;</em></button>
+
+      <div class="settings-group-label">Legal</div>
+      <button class="settings-row" data-action="open-terms">${icon("report")}<span><b>Terms &amp; Conditions</b><small>The rules of using Offkay</small></span><em>&rarr;</em></button>
+
+      <div class="settings-group-label">Session</div>
+      <button class="settings-row" data-action="confirm-logout">${icon("settings")}<span><b>Sign out</b><small>End this session on this device</small></span><em>&rarr;</em></button>
+      <button class="settings-row danger-row" data-action="confirm-delete-account">${icon("report")}<span><b>Delete my account</b><small>Permanently remove your profile and data</small></span><em>&rarr;</em></button>
+      <small class="settings-footnote">Offkay MVP &middot; signed in as ${esc(state.user.email)}</small>
+    </div>`;
+}
+
+function passwordSheet() {
+  modal(`
+    <div class="modal-head"><div><span class="eyebrow">Privacy &amp; security</span><h2>Change password</h2><p>Your new password must be at least 8 characters.</p></div><button class="close-button">&times;</button></div>
+    <form class="sheet-form" id="passwordForm">
+      <label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required></label>
+      <label>New password<input name="newPassword" type="password" autocomplete="new-password" minlength="8" required></label>
+      <button class="button primary wide" type="submit">Update password</button>
+    </form>`);
+  $("#passwordForm").onsubmit = async event => {
+    event.preventDefault();
+    const button = event.submitter;
+    setLoading(button, true, "Updating...");
+    try {
+      const values = Object.fromEntries(new FormData(event.currentTarget));
+      await request("/api/account/password",{method:"POST",body:JSON.stringify(values)});
+      closeModal();
+      toast("Password updated");
+    } catch (error) { toast(error.message); }
+    finally { setLoading(button, false); }
+  };
+}
+
+function connectionsSheet() {
+  const connected = (state.people || []).filter(item => item.connection?.state === "connected");
+  const incoming = (state.people || []).filter(item => item.connection?.state === "incoming");
+  modal(`
+    <div class="modal-head"><div><span class="eyebrow">Privacy &amp; connections</span><h2>My connections</h2><p>People you have accepted, and requests waiting on you.</p></div><button class="close-button">&times;</button></div>
+    <div class="settings-stack">
+      ${incoming.length ? `<div class="settings-group-label">Requests received</div>${incoming.map(person=>`
+        <div class="settings-row"><span class="avatar">${initials(person.name)}</span><span><b>${esc(person.name)}</b><small>${esc(person.university || "")}</small></span>
+        <button class="button primary small" data-action="accept-connect" data-id="${person.connection.connectionId}">Accept</button></div>`).join("")}` : ""}
+      <div class="settings-group-label">Connected (${connected.length})</div>
+      ${connected.length ? connected.map(person=>`
+        <div class="settings-row"><span class="avatar">${initials(person.name)}</span><span><b>${esc(person.name)}</b><small>${esc(person.university || "")}</small></span>
+        <button class="button subtle small" data-action="start-chat" data-id="${person.id}">Message</button></div>`).join("")
+        : `<p class="share-hint">No connections yet. Find people in Explore &rarr; People and send a request.</p>`}
+    </div>
+    <button class="button primary wide" data-action="goto-people">Discover people &rarr;</button>`);
+}
+
+function termsSheet() {
+  modal(`
+    <div class="modal-head"><div><span class="eyebrow">Legal</span><h2>Terms &amp; Conditions</h2><p>The short, honest version for the Offkay MVP.</p></div><button class="close-button">&times;</button></div>
+    <div class="terms-body">
+      <h3>1. Your account</h3><p>You are responsible for the details you publish and for keeping your password private. You can delete your account at any time from Settings, which removes your profile, listings, and messages.</p>
+      <h3>2. Listings and bookings</h3><p>Landlords are responsible for the accuracy of their listings. A booking is only confirmed after every rent share is successfully paid and verified server-side by Offkay.</p>
+      <h3>3. Payments</h3><p>Rent is processed by Paystack. Offkay currently charges no platform fee. Split-payment invite links are tied to a single booking and cannot be reused.</p>
+      <h3>4. Community conduct</h3><p>Treat other members with respect. Connection requests, messages, and profiles must not be used for harassment, scams, or sharing anyone's private information. Use the report link on any listing to flag concerns &mdash; reports are private.</p>
+      <h3>5. Verification</h3><p>Verification documents are reviewed manually and used only for trust checks. Offkay never publishes your NIN, ID photos, or contact details to other users.</p>
+    </div>
+    <button class="button primary wide" data-action="close-modal">Got it</button>`);
+}
+
+function logoutAllDevices() {
+  modal(`
+    <div class="modal-head"><div><h2>Sign out everywhere?</h2><p>Every signed-in session ends, including this one. You will need your password to sign back in.</p></div><button class="close-button">&times;</button></div>
+    <div class="detail-actions"><button class="button subtle" data-action="close-modal">Cancel</button><button class="button danger" data-action="do-logout-all">Sign out everywhere</button></div>`);
+}
+
+async function doLogoutAll() {
+  try { await request("/api/auth/logout-all",{method:"POST"}); }
+  catch { /* clear locally even if the request failed */ }
+  clearInterval(chatPoll);
+  stopBadgePolling();
+  state.user = null;
+  state.activeTab = "home";
+  state.activeConversation = null;
+  state.messages = [];
+  state.settingsView = false;
+  closeModal();
+  showAuth();
+  setAuthMode("login");
+  toast("Signed out on all devices");
+  bootstrap();
+}
+
+async function toggleMessageNotifs() {
+  const next = state.user.notifyMessages === false;
+  try {
+    const data = await request("/api/profile",{method:"PATCH",body:JSON.stringify({notifyMessages:next})});
+    state.user = data.user;
+    renderSettings();
+    toast(next ? "Message notifications on" : "Message notifications off");
+  } catch (error) { toast(error.message); }
 }
 
 function bookingsList() {
@@ -631,10 +954,12 @@ async function doLogout() {
   try { await request("/api/auth/logout",{method:"POST"}); }
   catch { /* clear locally even if the request failed */ }
   clearInterval(chatPoll);
+  stopBadgePolling();
   state.user = null;
   state.activeTab = "home";
   state.activeConversation = null;
   state.messages = [];
+  state.settingsView = false;
   closeModal();
   showAuth();
   setAuthMode("login");
@@ -1163,9 +1488,28 @@ function bindEvents() {
     if (action==="open-conversation") {state.activeConversation=id;renderMessages();}
     if (action==="back-to-conversations") {state.activeConversation=null;setChatPolling(null);renderMessages();}
     if (action==="toggle-habit") actionNode.classList.toggle("selected");
+    if (action==="open-notifications") openNotifications();
+    if (action==="mark-notifications-read") markNotificationsRead();
+    if (action==="open-notification") openNotificationDeepLink(actionNode);
+    if (action==="send-connect") sendConnect(id, actionNode);
+    if (action==="accept-connect") respondConnect(id, true, actionNode);
+    if (action==="decline-connect") respondConnect(id, false, actionNode);
+    if (action==="open-user-profile") openUserProfile(id);
+    if (action==="open-settings") { state.settingsView = true; renderProfile(); }
+    if (action==="back-to-profile") { state.settingsView = false; renderProfile(); }
+    if (action==="back-to-profile-edit") { state.settingsView = false; renderProfile(); }
+    if (action==="open-password") passwordSheet();
+    if (action==="open-connections") connectionsSheet();
+    if (action==="open-terms") termsSheet();
+    if (action==="logout-all-devices") logoutAllDevices();
+    if (action==="do-logout-all") doLogoutAll();
+    if (action==="toggle-message-notifs") toggleMessageNotifs();
+    if (action==="set-theme-settings") { applyTheme(actionNode.dataset.theme); renderSettings(); }
+    if (action==="goto-people") { closeModal(); state.exploreMode = "people"; switchTab("explore"); }
+    if (action==="reset-people-filters") { state.filters.people = { query:"", university:"", connected:false }; renderExplore(); }
   });
 
-  $("#notificationButton").addEventListener("click", () => { if (state.user) switchTab("messages"); });
+  $("#notificationButton").addEventListener("click", () => { if (state.user) openNotifications(); });
   $("#modalRoot").addEventListener("click", event => { if(event.target===$("#modalRoot")) closeModal(); });
   $("#loginForm").addEventListener("submit", login);
   $("#signupForm").addEventListener("submit", signup);
@@ -1183,6 +1527,7 @@ function bindEvents() {
     const filter = event.target.dataset.filter;
     if(filter==="home-query") state.filters.homes.query=event.target.value;
     if(filter==="roommate-query") state.filters.roommates.query=event.target.value;
+    if(filter==="people-query") { state.filters.people.query=event.target.value; renderExplore(); const retry=document.querySelector('[data-filter="people-query"]'); if(retry){retry.focus();retry.setSelectionRange(retry.value.length,retry.value.length);} }
     if(event.target.id==="conversationSearch"){
       const query=event.target.value.toLowerCase();
       $("#conversationRows").innerHTML=state.conversations.filter(item=>(item.other?.name || "").toLowerCase().includes(query)).map(conversationRow).join("");
@@ -1200,6 +1545,10 @@ function bindEvents() {
     if (group === "roommate") {
       const field = ({university:"university",budget:"maxBudget",habit:"habit",verified:"verified"})[key];
       if (field) state.filters.roommates[field] = value;
+    }
+    if (filter.startsWith("people-")) {
+      const field = ({university:"university",connected:"connected"})[key];
+      if (field) state.filters.people[field] = value;
     }
     renderExplore();
   });
