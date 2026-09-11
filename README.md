@@ -11,9 +11,10 @@ It includes tenant and landlord roles, sign-up/sign-in, landlord-only property p
 
 ## Run locally
 
-Requires Node.js 20 or newer. No package installation is needed.
+Requires Node.js 20 or newer.
 
 ```powershell
+npm install
 node server.js
 ```
 
@@ -23,10 +24,11 @@ For mobile access, connect the phone and computer to the same Wi-Fi network, the
 
 ## Tests
 
-The API is covered by an end-to-end smoke test that boots a disposable server on port 4599 with an isolated temp database:
+The API is covered by an end-to-end smoke test that boots a disposable server on port 4599 with an isolated temp database, and a security/stress suite on port 4598 (traversal, brute force, XSS storage, IDOR, signup races, burst traffic):
 
 ```powershell
 npm test
+node scripts/security-test.js
 ```
 
 ## Demo accounts
@@ -34,14 +36,17 @@ npm test
 - Tenant: `tenant@demo.test` / `demo1234`
 - Landlord: `landlord@demo.test` / `demo1234`
 
-## Launch boundary
+## Data storage
 
-The data store is a local JSON file for immediate MVP operation. Before public deployment, move users, listings, conversations, and bookings to a managed database.
+Set `MONGODB_URI` in the environment and all app state (users, sessions, listings, messages, bookings) persists to MongoDB Atlas; each collection is stored separately with stable natural keys. Without it, the app falls back to a local JSON file in `data/`, which is used by tests and local runs.
 
 ## Payments
 
 Payments run through Paystack checkout. Set `PAYSTACK_SECRET_KEY` in the environment to enable it; without a key the app falls back to a clearly-labeled demo confirmation flow. The flow is: create booking → initialize transaction server-side → Paystack hosted checkout → `/payment-callback.html` verifies the transaction server-side (amount-checked) → booking marked paid. A signed webhook (`POST /api/payments/webhook`) is also supported — point it at `https://your-domain/api/payments/webhook` in the Paystack dashboard as a backup confirmation path.
 
-## Vercel preview
+## Vercel deployment
 
-The repository includes a Vercel serverless adapter for the API. Vercel's filesystem is read-only, so the deployed build starts with the seeded data but cannot retain newly created accounts, listings, messages, or bookings between function instances. Use a managed database before public launch.
+The repository includes a Vercel serverless adapter for the API. Because serverless instances have an ephemeral filesystem, set these environment variables in Vercel (Project → Settings → Environment Variables) and redeploy:
+
+- `MONGODB_URI` — MongoDB Atlas connection string (required for persistence; without it every cold start re-seeds a fresh database)
+- `PAYSTACK_SECRET_KEY` — enables real Paystack checkout (test or live key)
