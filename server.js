@@ -227,7 +227,9 @@ async function loadDb() {
     if (/auth|sasl|illegal|username|password/.test(reason)) hint = "The database username or password in MONGODB_URI is wrong - re-copy the connection string from Atlas.";
     else if (/srv|querysrv|enotfound|getaddrinfo|dns/.test(reason)) hint = "The cluster hostname could not be resolved - re-copy the connection string from Atlas.";
     console.error("Database unavailable:", lastError?.message);
-    const boom = new Error(`Database connection failed. ${hint}`);
+    const codeMatch = String([lastError?.code, lastError?.codeName, lastError?.message].filter(Boolean).join(" ")).match(/(querySrv \w+|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|ESERVFAIL|authentication failed|bad auth|illegal scheme|invalid scheme|tlsv\d+|SSL[ \w]+|connection closed|timed out)/i);
+    const code = String(lastError?.codeName || lastError?.code || (codeMatch && codeMatch[0]) || "unknown").slice(0, 48);
+    const boom = new Error(`Database connection failed. ${hint} [code: ${code}]`);
     boom.status = 503;
     throw boom;
   }
