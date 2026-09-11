@@ -196,15 +196,30 @@ let mongoDbPromise = null;
 function mongoDb() {
   if (!mongoDbPromise) {
     const { MongoClient } = require("mongodb");
-    mongoDbPromise = new MongoClient(process.env.MONGODB_URI, { maxPoolSize: 5 }).connect()
-      .then(client => client.db(process.env.MONGODB_DB || "offkay"));
+    mongoDbPromise = new MongoClient(process.env.MONGODB_URI, {
+      maxPoolSize: 5,
+      serverSelectionTimeoutMS: 8_000,
+      connectTimeoutMS: 8_000,
+      socketTimeoutMS: 20_000,
+      retryWrites: true
+    }).connect()
+      .then(client => client.db(process.env.MONGODB_DB || "offkay"))
+      .catch(err => { mongoDbPromise = null; throw err; });
   }
   return mongoDbPromise;
 }
 
 async function loadDb() {
   if (!USE_MONGODB) return readDb();
-  const database = await mongoDb();
+  let database;
+  try {
+    database = await mongoDb();
+  } catch (err) {
+    console.error("Database unavailable:", err.message);
+    const boom = new Error("The database is waking up. Try again in a few seconds.");
+    boom.status = 503;
+    throw boom;
+  }
   const [meta, users, sessions, listings, saved, conversations, messages, bookings, inspections, reports, verifications] = await Promise.all([
     database.collection("state").findOne({ _id: "counters" }),
     database.collection("users").find({}).toArray(),
@@ -401,12 +416,19 @@ function requireUser(req, res, db) {
   return user;
 }
 
+function listingOccupancy(listing, db) {
+  const paidCount = db.bookings.filter(item => item.listingId === listing.id && item.status === "paid").length;
+  const capacity = Math.max(1, Math.min(10, Number(listing.bedrooms) || 1));
+  return { occupied: paidCount, capacity, full: paidCount >= capacity };
+}
+
 function listingPayload(listing, db, user) {
   const owner = db.users.find(item => item.id === listing.ownerId);
   return {
     ...listing,
     owner: owner ? { id:owner.id, name:owner.name, verified:owner.verified } : null,
-    saved: Boolean(user && db.saved.some(item => item.userId === user.id && item.listingId === listing.id))
+    saved: Boolean(user && db.saved.some(item => item.userId === user.id && item.listingId === listing.id)),
+    ...listingOccupancy(listing, db)
   };
 }
 
@@ -864,6 +886,8 @@ async function api(req, res, url) {
     const listing = db.listings.find(item => item.id === body.listingId && item.status === "active");
     if (!listing) return error(res,404,"Property not found");
     if (listing.ownerId === account.id) return error(res,400,"You cannot book your own property");
+    const occupancy = listingOccupancy(listing, db);
+    if (occupancy.full) return error(res,409,"This property is fully booked. Every room already has a confirmed group.");
     const existing = db.bookings.find(item => item.listingId === listing.id && item.tenantId === account.id && (item.status === "awaiting_payment" || item.status === "paid"));
     if (existing) return error(res,409,"You already have an active booking for this property. Check it in your profile.");
     const splitCount = Math.min(4, Math.max(1, Math.round(Number(body.splitCount) || 1)));
@@ -1083,6 +1107,7 @@ async function handler(req,res) {
   } catch (err) {
     console.error(err);
     if (err.message === "Request is too large") return error(res, 413, "Request is too large");
+    if (err.status) return error(res, err.status, err.message || "Service temporarily unavailable");
     return error(res,500,err.message === "Invalid JSON" ? err.message : "Something went wrong");
   }
 }

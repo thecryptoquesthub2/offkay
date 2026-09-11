@@ -303,6 +303,34 @@ async function run() {
       }
     }
 
+    console.log("== fully-booked capacity ==");
+    const capListing = await call(landlord, "POST", "/api/listings", { title:"Capacity Lodge", area:"Sango", university:"University of Ibadan", price:250000, type:"Shared", bedrooms:2, bathrooms:1, description:"Capacity test", amenities:[] });
+    check("capacity listing created", capListing.status === 201);
+    const capId = capListing.payload.listing.id;
+    const capEmpty = await call(null, "GET", "/api/bootstrap");
+    check("empty listing reports occupied 0/capacity 2", capEmpty.payload.listings.find(l => l.id === capId)?.occupied === 0 && capEmpty.payload.listings.find(l => l.id === capId)?.capacity === 2 && capEmpty.payload.listings.find(l => l.id === capId)?.full === false);
+    const capA = jar();
+    await call(capA, "POST", "/api/auth/signup", { name:"Cap Able", email:"cap.a@example.com", password:"password123" });
+    const capBookingA = await call(capA, "POST", "/api/bookings", { listingId: capId, splitCount: 1 });
+    check("first tenant books free room (201)", capBookingA.status === 201);
+    const capPayA = await call(capA, "POST", `/api/bookings/${capBookingA.payload.booking.id}/confirm-payment`);
+    check("first tenant payment confirmed", capPayA.status === 200 && capPayA.payload.booking.status === "paid");
+    const capHalf = await call(null, "GET", "/api/bootstrap");
+    check("one paid booking shows 1/2 booked, not full", capHalf.payload.listings.find(l => l.id === capId)?.occupied === 1 && capHalf.payload.listings.find(l => l.id === capId)?.full === false);
+    const capB = jar();
+    await call(capB, "POST", "/api/auth/signup", { name:"Cap Two", email:"cap.b@example.com", password:"password123" });
+    const capBookingB = await call(capB, "POST", "/api/bookings", { listingId: capId, splitCount: 1 });
+    check("second tenant books last room (201)", capBookingB.status === 201);
+    await call(capB, "POST", `/api/bookings/${capBookingB.payload.booking.id}/confirm-payment`);
+    const capFull = await call(null, "GET", "/api/bootstrap");
+    check("two paid bookings mark listing full (2/2)", capFull.payload.listings.find(l => l.id === capId)?.occupied === 2 && capFull.payload.listings.find(l => l.id === capId)?.full === true);
+    const capC = jar();
+    await call(capC, "POST", "/api/auth/signup", { name:"Cap Late", email:"cap.c@example.com", password:"password123" });
+    const capBookingC = await call(capC, "POST", "/api/bookings", { listingId: capId, splitCount: 1 });
+    check("third tenant rejected on full listing (409)", capBookingC.status === 409);
+    const capCancel = await call(capB, "POST", `/api/bookings/${capBookingB.payload.booking.id}/cancel`);
+    check("paid booking cannot be cancelled", capCancel.status === 409);
+
     console.log("== account management ==");
     const wrongDelete = await call(tenant, "DELETE", "/api/account", { password:"not-the-password" });
     check("delete account requires correct password (403)", wrongDelete.status === 403);

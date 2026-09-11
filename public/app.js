@@ -128,14 +128,18 @@ async function bootstrap() {
     } else showAuth();
   } catch (error) {
     console.error("Bootstrap failed:", error);
+    populateUniversities();
     showAuth();
-    toast(error.message);
+    if (!String(error.message).includes("waking up")) toast(error.message);
+    else toast("Offkay is reconnecting to its database — give it a few seconds and refresh.");
   }
 }
 
 function populateUniversities() {
+  const FALLBACK_UNIVERSITIES = ["University of Lagos","University of Ibadan","University of Nigeria, Nsukka","Obafemi Awolowo University","Ahmadu Bello University","University of Benin","University of Ilorin","University of Abuja","University of Port Harcourt","Federal University of Technology, Akure","University of Jos","Nnamdi Azikiwe University","Covenant University","Lagos State University","University of Calabar","Bayero University Kano"];
+  const list = (state.universities && state.universities.length ? state.universities : FALLBACK_UNIVERSITIES);
   const select = $("#signupUniversity");
-  if (select) select.innerHTML = state.universities.map(name => `<option>${esc(name)}</option>`).join("");
+  if (select) select.innerHTML = list.map(name => `<option>${esc(name)}</option>`).join("");
 }
 
 function showAuth() {
@@ -192,6 +196,7 @@ function listingCard(listing, landlordMode = false) {
       ${photo ? `<img src="${photo}" alt="${esc(listing.title)}">` : ""}
       <div class="building"></div>
       <span class="verify-tag">${icon("verified")} ${listing.verified ? "Verified" : "Under review"}</span>
+      ${!mine && !landlordMode && listing.full ? `<span class="status-tag booked-tag">Fully booked</span>` : !mine && !landlordMode && listing.occupied > 0 ? `<span class="status-tag occupancy-tag">${listing.occupied}/${listing.capacity} booked</span>` : ""}
       ${mine ? `<span class="status-tag">Your listing</span>`
         : landlordMode
           ? `<span class="status-tag">${esc(listing.status)}</span>`
@@ -744,8 +749,9 @@ function openListing(id) {
           <button class="button subtle" data-action="open-map" data-id="${item.id}">View on map</button>
           <button class="button subtle" data-action="contact-landlord" data-id="${item.id}">Message</button>
           <button class="button primary" data-action="open-inspection" data-id="${item.id}">Request inspection</button>
-          <button class="button primary" data-action="start-booking" data-id="${item.id}">Book &amp; split rent</button>
+          ${item.full ? `<button class="button light" disabled>Fully booked</button>` : `<button class="button primary" data-action="start-booking" data-id="${item.id}">Book &amp; split rent</button>`}
         </div>
+        ${item.full ? `<div class="payment-note">Every room here is already booked by a confirmed group. Browse the Explore tab for similar available homes.</div>` : ""}
         <button class="report-link" data-action="open-report" data-id="${item.id}">Report a concern</button>`}
       </div>
     </div>`,true);
@@ -918,6 +924,7 @@ function shareRows(price, splitCount) {
 function startBooking(id) {
   const item = state.listings.find(listing=>listing.id===id);
   if (!item) return;
+  if (item.full) return toast("This property is fully booked already. Try the Explore tab for similar homes.");
   const breakdown = () => shareRows(item.price, Number(document.querySelector("input[name=splitCount]:checked")?.value || 1));
   modal(`
     <div class="modal-head"><div><h2>Secure your space</h2><p>Review the booking before continuing to payment.</p></div><button class="close-button">&times;</button></div>

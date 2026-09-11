@@ -191,3 +191,6 @@ button.roommate-avatar{border:0;color:white;font-weight:750;background:var(--pri
 .modal{overflow-wrap:break-word}
 /* Filter panel: keep the icon and input inside the card edge */
 .filter-panel .filter-field{padding:0 11px}
+/* Fully-booked indication */
+.booked-tag{background:color-mix(in srgb,var(--danger) 14%,white)!important;color:var(--danger)!important;font-weight:750}
+.occupancy-tag{background:color-mix(in srgb,var(--primary) 12%,white)!important;color:var(--primary)!important;font-weight:650}
