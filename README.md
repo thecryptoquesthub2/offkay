@@ -37,6 +37,25 @@ Set `MONGODB_URI` in the environment and all app state (users, sessions, listing
 
 On serverless hosting (Vercel), a missing `MONGODB_URI` is refused loudly: sign-up returns `503 — Offkay is not connected to a database, so new accounts cannot be saved…` instead of reporting a success it cannot keep (the old silent path produced "invalid credentials" on the next sign-in because each instance had its own throwaway data). `GET /api/health` reports `storage: "ephemeral"` so you can detect the misconfiguration programmatically.
 
+## Password reset
+
+The full recovery flow is built in: **Sign in → Forgot password? → email → reset link → new password (+ confirmation) → sign in**. Reset tokens are single-use, hashed at rest, expire after 30 minutes, and completing a reset signs the account out everywhere.
+
+Delivery uses [Resend](https://resend.com). Set these variables (locally in `.env.local`, on Vercel in Project → Settings → Environment Variables, in Freebuff in Settings → Environment):
+
+- `RESEND_API_KEY` — enables real email delivery. Without it, the server logs the reset link to the console (dev mode) and the response is flagged `devMode: true`.
+- `RESEND_FROM` — optional sender, e.g. `Offkay <reset@yourdomain.com>`. Defaults to Resend's onboarding address, which only delivers to your own account email until a domain is verified in Resend.
+
+`POST /api/auth/forgot` always answers 200 (even for unknown emails) so the endpoint cannot be used to discover who has an account.
+
+## Google sign-in
+
+"Continue with Google" uses the plain OAuth 2.0 authorization-code flow against Google's endpoints (no new dependencies). Set:
+
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` — from [console.cloud.google.com](https://console.cloud.google.com/apis/credentials) → Create Credentials → OAuth client ID (Web application). Add `https://your-domain/api/auth/google/callback` as an Authorized redirect URI (for local runs: `http://127.0.0.1:4173/api/auth/google/callback`).
+
+Sign-in matches an existing Offkay account by the Google account's verified email and links it (keeping the password working), so Google users never create duplicate accounts. New Google users get a tenant profile seeded with their Google name/email. Without these variables the button fails with a clear "not configured" message, and CSRF is guarded by a signed state cookie.
+
 ## Payments
 
 Payments run through Paystack checkout. Set `PAYSTACK_SECRET_KEY` in the environment to enable it; without a key the app falls back to a clearly-labeled demo confirmation flow. The flow is: create booking → initialize transaction server-side → Paystack hosted checkout → `/payment-callback.html` verifies the transaction server-side (amount-checked) → booking marked paid. A signed webhook (`POST /api/payments/webhook`) is also supported — point it at `https://your-domain/api/payments/webhook` in the Paystack dashboard as a backup confirmation path.

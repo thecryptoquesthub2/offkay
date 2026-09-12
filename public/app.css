@@ -219,6 +219,34 @@ button.roommate-avatar{border:0;color:white;font-weight:750;background:var(--pri
 .auth-screen .form-stack input:focus,.auth-screen .form-stack select:focus{border-color:color-mix(in srgb,var(--primary) 55%,transparent);box-shadow:0 0 0 4px color-mix(in srgb,var(--primary) 12%,transparent)}
 .auth-screen .button.primary{background:linear-gradient(140deg,color-mix(in srgb,var(--primary) 86%,white),var(--primary));box-shadow:0 14px 30px -14px color-mix(in srgb,var(--primary) 72%,transparent)}
 .auth-screen .text-button b{color:var(--primary)}
+/* ===== Auth upgrades: eye toggles, Google, forgot/reset, banners ===== */
+.password-field{position:relative}
+.password-field input{padding-right:46px}
+.pw-toggle{position:absolute;right:7px;top:50%;transform:translateY(-50%);width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:10px;background:transparent;color:var(--text-secondary);cursor:pointer;transition:background .16s ease,color .16s ease}
+.pw-toggle:hover{background:color-mix(in srgb,var(--primary) 10%,transparent);color:var(--primary)}
+.pw-toggle:focus-visible{outline:3px solid color-mix(in srgb,var(--primary) 45%,transparent);outline-offset:2px}
+.pw-toggle svg{width:18px;height:18px}
+.pw-toggle.visible{color:var(--primary)}
+.forgot-row{display:flex;justify-content:flex-end;margin-top:-6px}
+.forgot-link{border:0;background:transparent;color:var(--primary);font-size:12.5px;font-weight:650;cursor:pointer;padding:4px 2px}
+.forgot-link:hover{text-decoration:underline}
+.auth-intro h3{margin:0 0 5px;font-size:19px;letter-spacing:-.03em}
+.auth-intro p{margin:0;color:var(--text-secondary);font-size:13px;line-height:1.55}
+.back-link{border:0;background:transparent;color:var(--text-secondary);font-size:12.5px;font-weight:650;cursor:pointer;text-align:left;padding:0;width:fit-content}
+.back-link:hover{color:var(--primary)}
+.divider{display:flex;align-items:center;gap:10px;color:var(--text-secondary);font-size:11px;font-weight:600;margin:2px 0}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--border)}
+.button.google{display:flex;align-items:center;justify-content:center;gap:10px;background:var(--surface-strong);color:var(--text);border:1px solid var(--border);box-shadow:none}
+.button.google:hover{border-color:color-mix(in srgb,var(--primary) 35%,var(--border));background:color-mix(in srgb,var(--primary) 4%,var(--surface-strong))}
+.button.google:active{transform:scale(.98)}
+.button.google .google-g{width:19px;height:19px;flex:none}
+.auth-banner{display:flex;align-items:flex-start;gap:9px;border-radius:14px;padding:11px 13px;font-size:12.5px;font-weight:600;line-height:1.5}
+.auth-banner.hidden{display:none}
+.auth-banner.error{background:color-mix(in srgb,#c0392b 10%,transparent);color:#8f2318;border:1px solid color-mix(in srgb,#c0392b 28%,transparent)}
+.auth-banner.ok{background:color-mix(in srgb,#1e8e5a 10%,transparent);color:#136a45;border:1px solid color-mix(in srgb,#1e8e5a 30%,transparent)}
+.auth-banner.error::before{content:"!";font-weight:800}
+.auth-banner.ok::before{content:"\2713";font-weight:800}
+@media (prefers-reduced-motion: reduce){.button.google:active{transform:none}}
 
 /* ===== Social layer: badges, notifications, people, settings ===== */
 .count-badge{position:absolute;z-index:3;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:var(--conversion);color:#1A202C;font:800 10px/17px var(--font-ui);font-style:normal;text-align:center;white-space:nowrap}
