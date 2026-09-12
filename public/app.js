@@ -31,6 +31,10 @@ const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const money = value => `&#8358;${Number(value || 0).toLocaleString("en-NG")}`;
 const initials = name => String(name || "?").split(/\s+/).map(part => part[0]).join("").slice(0,2).toUpperCase();
+// Avatar HTML: photo when the user has one (uploaded or Google), initials otherwise.
+const avatarHtml = (name, avatarUrl, cls = "") => avatarUrl
+  ? `<span class="avatar ${cls}"><img class="avatar-img" src="${esc(avatarUrl)}" alt="${esc(name || "Avatar")}" loading="lazy"></span>`
+  : `<span class="avatar ${cls}">${initials(name)}</span>`;
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[char]));
 const time = iso => new Intl.DateTimeFormat("en-NG",{hour:"numeric",minute:"2-digit"}).format(new Date(iso));
 const firstName = name => String(name || "").split(" ")[0];
@@ -386,7 +390,9 @@ function enterApp() {
   $("#authScreen").classList.add("hidden");
   $("#app").classList.remove("hidden");
   $("#app").hidden = false;
-  $("#topAvatar").textContent = initials(state.user.name);
+  $("#topAvatar").innerHTML = state.user.avatarUrl
+    ? `<img class="avatar-img" src="${esc(state.user.avatarUrl)}" alt="${esc(state.user.name)}">`
+    : esc(initials(state.user.name));
   $("#topName").textContent = firstName(state.user.name);
   $("#topRole").textContent = inHostView() ? "Host" : "Guest";
   if (state.user.isCoreAdmin) {
@@ -572,7 +578,7 @@ function listingCard(listing, landlordMode = false) {
 
 function roommateCard(person) {
   return `<article class="roommate-card glass">
-    <button class="roommate-avatar" data-action="open-user-profile" data-id="${person.id}" aria-label="Open profile">${initials(person.name)}</button>
+    <button class="roommate-avatar" data-action="open-user-profile" data-id="${person.id}" aria-label="Open profile">${avatarHtml(person.name, person.avatarUrl)}</button>
     <div class="roommate-copy">
       <div><h3>${esc(person.name)}</h3><span>${person.score ? `${person.score}% match` : "Add your preferences for a match score"}</span></div>
       <p>${person.bio ? esc(person.bio) : "This student has not written an about-me yet."}</p>
@@ -585,8 +591,6 @@ function roommateCard(person) {
 function tenantHome() {
   const universityListings = state.listings.filter(item => item.university === state.user.university);
   const visible = (universityListings.length ? universityListings : state.listings).slice(0,3);
-  const savedCount = state.listings.filter(item => item.saved).length;
-  const paidBookings = state.bookings.filter(item => item.status === "paid").length;
   return `
     <div class="hero-panel">
       <div class="hero-copy">
@@ -596,11 +600,6 @@ function tenantHome() {
         <div class="hero-actions"><button class="button primary" data-tab="explore">Explore homes &rarr;</button><button class="button subtle" data-action="open-matches">Find a roommate</button></div>
       </div>
       <div class="hero-visual"><div class="mini-property"><div class="mini-building"></div></div><div class="float-stat"><b>${visible.length || state.listings.length} nearby</b>verified places to explore</div></div>
-    </div>
-    <div class="metrics-strip">
-      <div class="metric-col"><span class="metric-icon">${icon("heart")}</span><strong>${savedCount}</strong><span class="metric-label">Saved</span></div>
-      <div class="metric-col"><span class="metric-icon">${icon("messages")}</span><strong>${state.conversations.length}</strong><span class="metric-label">Chats</span></div>
-      <div class="metric-col"><span class="metric-icon">${icon("lock")}</span><strong>${paidBookings}</strong><span class="metric-label">Bookings</span></div>
     </div>
     <div class="section-head"><div><h2>Recommended near you</h2><p>Verified homes around your university and budget.</p></div><button class="link-button" data-tab="explore">View everything &rarr;</button></div>
     ${visible.length ? `<div class="card-row-fade"><div class="listing-grid home-carousel">${visible.map(item => listingCard(item)).join("")}</div></div>` : emptyState("No local homes yet","Try another university from the Explore tab.")}`;
@@ -734,10 +733,16 @@ function mapCanvas(items) {
     </div>`).join("")}</div>`;
 }
 
+function visibleConversations() {
+  const query = String(state.conversationQuery || "").trim().toLowerCase();
+  if (!query) return state.conversations;
+  return state.conversations.filter(item => `${item.other?.name || ""} ${item.listingTitle || ""} ${item.lastMessage?.text || ""}`.toLowerCase().includes(query));
+}
+
 function conversationRow(conversation) {
   const active = state.activeConversation === conversation.id;
   return `<button class="conversation ${active?"active":""}" data-action="open-conversation" data-id="${conversation.id}">
-    <span class="avatar">${initials(conversation.other?.name)}</span>
+    ${avatarHtml(conversation.other?.name, conversation.other?.avatarUrl)}
     <span class="conversation-text"><b>${esc(conversation.other?.name || "Offkay user")}</b><span>${esc(conversation.lastMessage?.text || "Start the conversation")}</span></span>
     <time>${conversation.lastMessage ? time(conversation.lastMessage.createdAt) : ""}${conversation.unread ? `<i class="unread-dot">${conversation.unread}</i>` : ""}</time>
   </button>`;
@@ -755,7 +760,7 @@ function connectButton(person, normal = false) {
 function personRow(person) {
   return `<div class="person-row">
     <button class="person-main" data-action="open-user-profile" data-id="${person.id}">
-      <span class="avatar">${initials(person.name)}</span>
+      ${avatarHtml(person.name, person.avatarUrl)}
       <span class="conversation-text"><b>${esc(person.name)}</b><span>${esc(person.university || "Offkay")}${person.bio ? ` · ${esc(person.bio.slice(0,60))}${person.bio.length>60?"…":""}` : ""}</span></span>
     </button>
     <button class="button subtle small" data-action="start-chat" data-id="${person.id}">Message</button>
@@ -788,7 +793,7 @@ function peopleSection() {
 
 function personCard(person) {
   return `<article class="roommate-card glass person-card">
-    <button class="roommate-avatar" data-action="open-user-profile" data-id="${person.id}" aria-label="Open profile">${initials(person.name)}</button>
+    <button class="roommate-avatar" data-action="open-user-profile" data-id="${person.id}" aria-label="Open profile">${avatarHtml(person.name, person.avatarUrl)}</button>
     <div class="roommate-copy">
       <div><h3><a href="#" data-action="open-user-profile" data-id="${person.id}" class="person-name-link">${esc(person.name)}</a></h3><span>${person.score ? `${person.score}% match` : (person.connection?.state === "connected" ? "Connected" : esc(person.university || ""))}</span></div>
       <p>${esc(person.bio || "This member has not added a bio yet.")}</p>
@@ -811,7 +816,7 @@ async function openUserProfile(id) {
       <div class="modal-head"><div><span class="eyebrow">${person.verified ? "&#10003; Verified member" : "Offkay member"}${person.score ? ` · ${person.score}% match` : ""}</span><h2>${esc(person.name)}</h2><p>${esc(person.university || "Offkay")}${person.hosting ? " · Host" : " · Student"}</p></div><button class="close-button">&times;</button></div>
       <div class="public-profile">
         <div class="profile-hero-mini">
-          <span class="avatar large">${initials(person.name)}</span>
+          ${avatarHtml(person.name, person.avatarUrl, "large")}
           <div class="profile-hero-facts">
             ${person.connection?.state === "connected" ? `<span class="verified-line">&#10003; Connected</span>` : ""}
             <small>Member since ${person.memberSince ? new Date(person.memberSince).toLocaleDateString("en-NG",{month:"long",year:"numeric"}) : "recently"}</small>
@@ -866,8 +871,8 @@ function renderMessages() {
     <div class="message-shell glass ${current?"chat-open":""}">
       <aside class="conversation-list">
         <h2>Messages</h2>
-        <input class="conversation-search" id="conversationSearch" placeholder="Search conversations...">
-        <div id="conversationRows">${state.conversations.map(conversationRow).join("") || `<div class="no-conv-hint">No conversations yet. Open someone’s profile or use Find people below, then tap Message.</div>`}</div>
+        <input class="conversation-search" id="conversationSearch" placeholder="Search conversations..." value="${esc(state.conversationQuery || "")}">
+        <div id="conversationRows">${visibleConversations().map(conversationRow).join("") || `<div class="no-conv-hint">${(state.conversationQuery || "").trim() ? "No conversation matches that search." : "No conversations yet. Open someone’s profile or use Find people below, then tap Message."}</div>`}</div>
         <div class="discover-block">
           <h3>Find people</h3>
           <input class="conversation-search" id="peopleSearch" placeholder="Search people by name, school, or lifestyle..." value="${esc(state.discovery || "")}">
@@ -892,7 +897,7 @@ function renderMessages() {
 
 function chatMarkup(conversation) {
   return `<section class="chat">
-    <header class="chat-head"><button class="icon-more mobile-chat-back" data-action="back-to-conversations">&larr;</button><button class="chat-head-user" data-action="open-user-profile" data-id="${conversation.other?.id || ""}"><span class="avatar">${initials(conversation.other?.name)}</span><span><b>${esc(conversation.other?.name || "Offkay user")}</b><small>${conversation.other?.verified?"&#10003; Verified user":"Offkay member"}</small></span></button>${conversation.listingTitle ? `<span class="chat-listing-tag">${esc(conversation.listingTitle)}</span>` : ""}</header>
+    <header class="chat-head"><button class="icon-more mobile-chat-back" data-action="back-to-conversations">&larr;</button><button class="chat-head-user" data-action="open-user-profile" data-id="${conversation.other?.id || ""}">${avatarHtml(conversation.other?.name, conversation.other?.avatarUrl)}<span><b>${esc(conversation.other?.name || "Offkay user")}</b><small>${conversation.other?.verified?"&#10003; Verified user":"Offkay member"}</small></span></button>${conversation.listingTitle ? `<span class="chat-listing-tag">${esc(conversation.listingTitle)}</span>` : ""}</header>
     <div class="chat-messages" id="chatMessages"><div class="no-chat">Loading messages...</div></div>
     <form class="chat-compose" id="messageForm">
       <div class="chat-attachments" id="chatAttachments" hidden></div>
@@ -932,11 +937,7 @@ function setChatPolling(conversationId) {
       if (fresh && data.conversation) Object.assign(fresh, data.conversation);
       const rows = $("#conversationRows");
       if (rows && fresh) {
-        const search = $("#conversationSearch");
-        const q = (search?.value || "").trim().toLowerCase();
-        rows.innerHTML = state.conversations
-          .filter(item => !q || (item.other?.name || "").toLowerCase().includes(q))
-          .map(conversationRow).join("");
+        rows.innerHTML = visibleConversations().map(conversationRow).join("");
       }
       request("/api/badges").then(b => {
         state.unreadMessages = b.messages;
@@ -1202,6 +1203,25 @@ function onRecordingStopped() {
   reader.readAsDataURL(blob);
 }
 
+function changeAvatar() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/jpeg,image/png,image/webp";
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    try {
+      const dataUrl = await compressImageToDataUrl(file, 400);
+      const data = await request("/api/profile",{method:"PATCH",body:JSON.stringify({ avatar: dataUrl })});
+      state.user = data.user;
+      renderProfile();
+      enterApp();
+      toast("Profile photo updated");
+    } catch (error) { toast(error.message); }
+  };
+  input.click();
+}
+
 function renderProfile() {
   if (state.settingsView) return renderSettings();
   const tenant = state.user.role === "tenant";
@@ -1217,14 +1237,17 @@ function renderProfile() {
   $("#tab-profile").innerHTML = `
     <section class="profile-hero glass">
       <div class="profile-hero-id">
-        <span class="avatar large">${initials(state.user.name)}</span>
+        ${avatarHtml(state.user.name, state.user.avatarUrl, "large")}
         <div class="profile-hero-name">
           <h1>${esc(state.user.name)}</h1>
           <p>${esc(state.user.email)} &middot; ${hosting && !tenant ? "Host" : hosting ? "Host & tenant" : "Tenant"}</p>
           ${verificationBadge(verificationState(), state.verification)}
         </div>
       </div>
-      <button class="button subtle" data-action="open-settings">${icon("settings")} Settings</button>
+      <div class="profile-hero-actions">
+        <button class="button subtle" data-action="open-settings">${icon("settings")} Settings</button>
+        <button class="button subtle" data-action="change-avatar">${icon("plus")} Change photo</button>
+      </div>
     </section>
 
     <section class="profile-section">
@@ -1325,7 +1348,6 @@ function renderSettings() {
 
       <div class="settings-group-label">Session</div>
       <button class="settings-row" data-action="confirm-logout">${icon("settings")}<span><b>Sign out</b><small>End this session on this device</small></span><em>&rarr;</em></button>
-      <button class="settings-row danger-row" data-action="confirm-delete-account">${icon("report")}<span><b>Delete my account</b><small>Permanently remove your profile and data</small></span><em>&rarr;</em></button>
       <small class="settings-footnote">Offkay MVP &middot; signed in as ${esc(state.user.email)}</small>
     </div>`;
 }
@@ -1359,11 +1381,11 @@ function connectionsSheet() {
     <div class="modal-head"><div><span class="eyebrow">Privacy &amp; connections</span><h2>My connections</h2><p>People you have accepted, and requests waiting on you.</p></div><button class="close-button">&times;</button></div>
     <div class="settings-stack">
       ${incoming.length ? `<div class="settings-group-label">Requests received</div>${incoming.map(person=>`
-        <div class="settings-row"><span class="avatar">${initials(person.name)}</span><span><b>${esc(person.name)}</b><small>${esc(person.university || "")}</small></span>
+        <div class="settings-row">${avatarHtml(person.name, person.avatarUrl)}<span><b>${esc(person.name)}</b><small>${esc(person.university || "")}</small></span>
         <button class="button primary small" data-action="accept-connect" data-id="${person.connection.connectionId}">Accept</button></div>`).join("")}` : ""}
       <div class="settings-group-label">Connected (${connected.length})</div>
       ${connected.length ? connected.map(person=>`
-        <div class="settings-row"><span class="avatar">${initials(person.name)}</span><span><b>${esc(person.name)}</b><small>${esc(person.university || "")}</small></span>
+        <div class="settings-row">${avatarHtml(person.name, person.avatarUrl)}<span><b>${esc(person.name)}</b><small>${esc(person.university || "")}</small></span>
         <button class="button subtle small" data-action="start-chat" data-id="${person.id}">Message</button></div>`).join("")
         : `<p class="share-hint">No connections yet. Find people in Explore &rarr; People and send a request.</p>`}
     </div>
@@ -1537,7 +1559,7 @@ async function renderAdmin() {
     ${pending.length ? `<div class="admin-queue">${pending.map(item => `
       <div class="admin-row">
         <button class="person-main" data-action="admin-review" data-id="${item.id}">
-          <span class="avatar">${initials(item.applicantName)}</span>
+          <span class="avatar">${avatarHtml(item.applicantName, item.applicantAvatarUrl)}</span>
           <span class="conversation-text"><b>${esc(item.applicantName)}</b><span>${esc(item.applicantEmail)} · ${esc(item.applicantUniversity || "")}</span></span>
         </button>
         <small class="admin-date">${new Date(item.createdAt).toLocaleDateString()}</small>
@@ -1745,10 +1767,16 @@ async function startChat(id) {
     // BEFORE navigating so the chat is never left sitting under a modal.
     closeModal();
     state.openProfileId = null;
-    await refreshData(false);
-    state.activeConversation = data.conversationId;
+    // Splice the returned conversation straight into local state (the POST
+    // reply carries the full payload) so the list needs no extra round-trip.
+    const conversationId = data.conversationId;
+    if (data.conversation && !state.conversations.some(item => item.id === conversationId)) {
+      state.conversations.unshift(data.conversation);
+    }
+    state.activeConversation = conversationId;
     switchTab("messages");
     renderMessages();
+    refreshData(false).catch(() => {});
     toast("Conversation started");
   } catch(error) { toast(error.message); }
 }
@@ -2120,7 +2148,8 @@ function bindEvents() {
     if (action==="activate-host") activateHost();
     if (action==="confirm-logout") confirmLogout();
     if (action==="do-logout") doLogout();
-    if (action==="confirm-delete-account") confirmDeleteAccount();
+    if (action==="change-avatar") changeAvatar();
+    if (action==="confirm-delete-account") confirmDeleteAccount(); // endpoint kept; UI entry removed
     if (action==="resume-payment") resumePayment(id);
     if (action==="share-links") shareLinks(id);
     if (action==="cancel-booking") cancelBooking(id);
@@ -2191,8 +2220,8 @@ function bindEvents() {
     if(filter==="roommate-query") state.filters.roommates.query=event.target.value;
     if(filter==="people-query") { state.filters.people.query=event.target.value; renderExplore(); const retry=document.querySelector('[data-filter="people-query"]'); if(retry){retry.focus();retry.setSelectionRange(retry.value.length,retry.value.length);} }
     if(event.target.id==="conversationSearch"){
-      const query=event.target.value.toLowerCase();
-      $("#conversationRows").innerHTML=state.conversations.filter(item=>(item.other?.name || "").toLowerCase().includes(query)).map(conversationRow).join("");
+      state.conversationQuery = event.target.value;
+      $("#conversationRows").innerHTML = visibleConversations().map(conversationRow).join("") || `<div class="no-conv-hint">No conversation matches that search.</div>`;
     }
   });
   document.addEventListener("change",event=>{

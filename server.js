@@ -578,6 +578,7 @@ function serializeApi(handler) {
 function publicUser(user) {
   if (!user) return null;
   const { password, ...safe } = user;
+  safe.avatarUrl = user.avatar || user.googlePicture || null;
   // Authorization data the client may know: whether THIS session is an admin
   // (used only to show the Admin entry point). Every admin action is still
   // verified server-side — this flag gates UI, never authorization.
@@ -661,7 +662,10 @@ function profileView(account) {
     bio: account.bio || "",
     habits: Array.isArray(account.habits) ? account.habits : [],
     budget: Number(account.budget || 0),
-    memberSince: account.createdAt || null
+    memberSince: account.createdAt || null,
+    // Public-safe avatar: the user's uploaded photo or their Google profile
+    // picture. Never an arbitrary user-supplied URL.
+    avatarUrl: account.avatar || account.googlePicture || null
   };
 }
 
@@ -863,6 +867,7 @@ function conversationPayload(conversation, db, viewerId) {
   const unread = messages.filter(message => message.senderId !== viewerId && message.createdAt > readUpTo).length;
   return {
     id: conversation.id,
+    otherReadAt: conversation.reads?.[otherId] || null,
     listingId: conversation.listingId || null,
     listingTitle: listing ? listing.title : null,
     updatedAt: conversation.updatedAt,
@@ -1180,7 +1185,8 @@ async function api(req, res, url) {
         id: id("usr"), name: displayName, email: googleEmail, password: "",
         role: "tenant", phone: "", university: universities[0], verified: false,
         bio: "", budget: 0, habits: [], createdAt: new Date().toISOString(),
-        oauthProvider: "google", oauthId: googleSub
+        oauthProvider: "google", oauthId: googleSub,
+        googlePicture: /^https:\/\//.test(String(idInfo.picture || "")) ? String(idInfo.picture).slice(0, 500) : null
       };
       db.users.push(account);
       notify(db, account.id, { type: "system", title: "Welcome to Offkay", body: "Add your university, budget, and lifestyle so roommates can find you.", actorId: null, meta: {} });
@@ -1189,6 +1195,9 @@ async function api(req, res, url) {
       // The password stays intact, so email sign-in keeps working.
       account.oauthProvider = "google";
       account.oauthId = googleSub;
+    }
+    if (!account.googlePicture && /^https:\/\//.test(String(idInfo.picture || ""))) {
+      account.googlePicture = String(idInfo.picture).slice(0, 500);
     }
     const token = id("ses");
     db.sessions.push({ token, userId: account.id, expiresAt: Date.now() + SESSION_TTL });
@@ -1282,6 +1291,18 @@ async function api(req, res, url) {
     if (body.budget !== undefined) account.budget = Math.max(0, Math.min(10_000_000, Number(body.budget) || 0));
     if (Array.isArray(body.habits)) account.habits = body.habits.slice(0,8).map(habit => String(habit).slice(0,40));
     if (body.notifyMessages !== undefined) account.notifyMessages = body.notifyMessages === true;
+    // Profile picture: only inline JPEG/PNG/WEBP data URLs the client has
+    // already downscaled (<= ~900 KB). null clears the custom photo (the
+    // Google picture, if any, shows again). Never a remote URL.
+    if (body.avatar !== undefined) {
+      if (body.avatar === null) {
+        account.avatar = null;
+      } else if (typeof body.avatar === "string" && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(body.avatar.slice(0, 120)) && body.avatar.length <= 1_200_000) {
+        account.avatar = body.avatar;
+      } else {
+        return error(res, 400, "Profile photo must be a small JPEG, PNG, or WebP image");
+      }
+    }
     await persistDb(db);
     return json(res, 200, {user:publicUser(account)});
   }
@@ -1543,7 +1564,7 @@ async function api(req, res, url) {
       db.conversations.push(conversation);
     }
     await persistDb(db);
-    return json(res,200,{conversationId:conversation.id});
+    return json(res,200,{conversationId:conversation.id,conversation:conversationPayload(conversation, db, account.id)});
   }
 
   if (route === "/api/roommates" && method === "GET") {
