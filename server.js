@@ -340,6 +340,12 @@ function ensureDb() {
   }
 }
 
+// File-mode mirror of the Mongo "demoSeed" state flag: marks that the one-time
+// demo seed already ran for this data directory so intentional deletions stick.
+function seedFlagFile() { return path.join(DATA_DIR, "demo-seeded"); }
+function readSeedFlag() { try { return fs.existsSync(seedFlagFile()); } catch { return true; } }
+function writeSeedFlag() { try { fs.writeFileSync(seedFlagFile(), new Date().toISOString()); } catch {}}
+
 function readDb() {
   ensureDb();
   const db = JSON.parse(fs.readFileSync(DB_FILE, "utf8").replace(/^\uFEFF/, ""));
@@ -431,7 +437,21 @@ function classifyDbError(lastError) {
 }
 
 async function loadDb() {
-  if (!USE_MONGODB) return readDb();
+  if (!USE_MONGODB) {
+    const db = readDb();
+    // Same one-time demo seed as Mongo mode, for an existing-but-emptied file DB.
+    if (process.env.OFFKAY_SEED_DEMO !== "0" && db.listings.length === 0 && !readSeedFlag()) {
+      const seed = seedDb();
+      const takenEmails = new Set(db.users.map(user => String(user.email || "").toLowerCase()));
+      seed.users = seed.users.filter(user => !takenEmails.has(user.email.toLowerCase()));
+      if (!seed.users.some(user => user.id === "usr_landlord_demo")) { seed.listings = []; seed.saved = []; seed.conversations = []; seed.messages = []; }
+      Object.assign(db, seed);
+      db.demoSeedMarked = true;
+      writeSeedFlag();
+      console.log(`Database has no listings - seeded demo content (${seed.listings.length} listings, ${seed.users.length} demo accounts; one-time)`);
+    }
+    return db;
+  }
   const lint = lintMongoUri(process.env.MONGODB_URI);
   if (lint) {
     const boom = new Error(`Database connection failed. ${lint.hint} [code: ${lint.code}]`);
@@ -487,6 +507,27 @@ async function loadDb() {
     notifications: notifications.map(({ _id, ...rest }) => rest),
     connections: connections.map(({ _id, ...rest }) => rest)
   });
+  // One-time Mongo seeding: a database with no listings at all gets the same
+  // demo content as file mode — demo accounts, four sample listings, and the
+  // starter conversation. Guarded by a permanent flag in the state collection
+  // so it can never re-run after the content is intentionally deleted. Every
+  // demo record has a fixed id, so parallel cold starts converge idempotently.
+  // Opt out entirely with OFFKAY_SEED_DEMO=0.
+  if (process.env.OFFKAY_SEED_DEMO !== "0" && db.listings.length === 0) {
+    const seedFlag = await database.collection("state").findOne({ _id: "demoSeed" });
+    if (!seedFlag) {
+      const seed = seedDb();
+      const takenEmails = new Set(db.users.map(user => String(user.email || "").toLowerCase()));
+      seed.users = seed.users.filter(user => !takenEmails.has(user.email.toLowerCase()));
+      // Only seed the demo listings/conversation when the demo landlord exists
+      // to own them; never seed content pointing at a missing owner.
+      const landlordPresent = seed.users.some(user => user.id === "usr_landlord_demo");
+      if (!landlordPresent) { seed.listings = []; seed.saved = []; seed.conversations = []; seed.messages = []; }
+      Object.assign(db, seed);
+      await database.collection("state").updateOne({ _id: "demoSeed" }, { $set: { seededAt: new Date().toISOString() } }, { upsert: true });
+      console.log(`Database has no listings - seeded demo content (${seed.listings.length} listings, ${seed.users.length} demo accounts; one-time; set OFFKAY_SEED_DEMO=0 to disable)`);
+    }
+  }
   loadedKeys = snapshotKeys(db);
   return db;
 }
@@ -518,6 +559,7 @@ function snapshotKeys(db) {
 async function persistDb(db) {
   if (!USE_MONGODB) {
     await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    if (db.demoSeedMarked) { writeSeedFlag(); db.demoSeedMarked = false; }
     return;
   }
   const database = await mongoDb();
