@@ -559,7 +559,7 @@ select.filter-pill{padding-right:32px;background-image:url("data:image/svg+xml;c
 .chip.active{background:var(--ink,var(--text));border-color:var(--ink,var(--text));color:var(--bg,#fff);font-weight:650}
 @media(min-width:700px){
   .explore-list{gap:16px}
-  .explore-list .listing-card{border-radius:var(--radius-large,24px);transition:transform .2s ease,box-shadow .2s ease}
+  .explore-list .listing-card{border-radius:var(--radius-large,24px);min-height:196px;transition:transform .2s ease,box-shadow .2s ease}
   .explore-list .listing-card:hover{transform:translateY(-2px)}
     .explore-list .listing-image{border-radius:calc(var(--radius-large, 24px) - 2px) 0 0 calc(var(--radius-large, 24px) - 2px)}
   .explore-list .listing-info{display:flex;flex-direction:column;justify-content:center;padding:18px 26px 18px 22px;gap:2px}
@@ -583,7 +583,9 @@ select.filter-pill{padding-right:32px;background-image:url("data:image/svg+xml;c
   .explore-search input{font-size:16px}
   .explore-search-action span{display:none}
   .explore-search-action{padding:10px 12px}
-  .explore-main .liquid-segment{margin:0 0 16px}
+  .explore-main .liquid-segment{max-width:none;display:flex;overflow-x:auto;justify-content:flex-start;scrollbar-width:none;scroll-padding-left:18px;margin:0 -18px 16px;padding:4px 18px 8px}
+  .explore-main .liquid-segment::-webkit-scrollbar{display:none}
+  .explore-main .liquid-segment button{flex:0 0 auto;padding:10px 16px;white-space:nowrap}
   .explore-main .filter-chips{flex-wrap:nowrap;overflow-x:auto;margin:0 -18px 2px;padding:2px 18px 6px;scrollbar-width:none}
   .explore-main .filter-chips::-webkit-scrollbar{display:none}
   .chip{flex:0 0 auto}
