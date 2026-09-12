@@ -1483,7 +1483,7 @@ async function api(req, res, url) {
     for (const a of attachments.slice(0, MAX_FILES)) {
       const dataUrl = String(a?.dataUrl || "");
       const meta = String(a?.meta || "audio");
-      const match = dataUrl.match(/^data:([\w./+-]+);base64,([A-Za-z0-9+\/=]+)$/);
+      const match = dataUrl.match(/^data:([\w./+-]+)(?:;[\w.=-]+)*;base64,([A-Za-z0-9+\/=]+)$/);
       if (!match) return error(res,400,"Attachment must be a base64 data URL");
       const mime = match[1].toLowerCase();
       if (!ALLOWED[mime]) return error(res,415,"Unsupported attachment type. Use images, short videos, or voice notes.");

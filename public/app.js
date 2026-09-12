@@ -984,8 +984,11 @@ async function loadMessages(conversationId) {
   } catch (error) { toast(error.message); }
 }
 
+let sendingMessage = false;
+
 async function sendMessage(event) {
   event.preventDefault();
+  if (sendingMessage) return; // guard against double-taps on the send button
   const input = event.currentTarget.elements.text;
   const text = input.value.trim();
   const attachments = pendingChatAttachments.slice();
@@ -993,6 +996,7 @@ async function sendMessage(event) {
   input.value = "";
   pendingChatAttachments = [];
   renderPendingAttachments();
+  sendingMessage = true;
   try {
     await request(`/api/conversations/${state.activeConversation}/messages`,{method:"POST",body:JSON.stringify({ text, attachments })});
     const data = await request(`/api/conversations/${state.activeConversation}/messages`);
@@ -1007,6 +1011,8 @@ async function sendMessage(event) {
     pendingChatAttachments = attachments;
     renderPendingAttachments();
     toast(error.message);
+  } finally {
+    sendingMessage = false;
   }
 }
 
@@ -1053,12 +1059,54 @@ function probeMediaDuration(file, kind) {
   });
 }
 
+// Some Android pickers report an empty file.type - infer it from the extension.
+function inferFileType(file) {
+  if (file.type) return file.type;
+  const ext = String(file.name || "").toLowerCase().match(/\.(jpe?g|png|gif|webp|heic|mp4|webm|mov)$/);
+  if (!ext) return "";
+  const map = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", heic: "image/heic", mp4: "video/mp4", webm: "video/webm", mov: "video/mp4" };
+  return map[ext[1]] || "";
+}
+
+const CHAT_DATAURL_BUDGET = 1150000; // data-URL chars; ~860 KB binary, under the server cap
+
+// Downscale + re-encode a photo to a JPEG data URL that fits the message budget.
+function compressImageToDataUrl(file, maxDim = 1600) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let best = null;
+      for (const dim of [maxDim, 1280, 1024, 800, 640]) {
+        const scale = Math.min(1, dim / Math.max(img.width || 1, img.height || 1));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round((img.width || dim) * scale));
+        canvas.height = Math.max(1, Math.round((img.height || dim) * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return reject(new Error("Image compression is not supported here"));
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        for (const q of [0.8, 0.62, 0.45]) {
+          const out = canvas.toDataURL("image/jpeg", q);
+          if (!best || out.length < best.length) best = out;
+          if (out.length <= CHAT_DATAURL_BUDGET) return resolve(out);
+        }
+      }
+      if (best) resolve(best);
+      else reject(new Error("We could not read that image"));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That image could not be read - try a JPG or PNG")); };
+    img.src = url;
+  });
+}
+
 async function handlePickedFiles(fileList) {
   for (const file of [...fileList]) {
-    const isImage = file.type.startsWith("image/");
-    const isVideo = file.type.startsWith("video/");
+    const fileType = inferFileType(file);
+    const isImage = fileType.startsWith("image/");
+    const isVideo = fileType.startsWith("video/");
     if (!isImage && !isVideo) { toast("Only photos and short videos can be attached"); continue; }
-    if (file.size > CHAT_MEDIA_LIMIT) { toast(isVideo ? "Keep videos short — under about 650 KB (roughly 10 seconds)" : "Choose a photo under 650 KB"); continue; }
+    if (isVideo && file.size > CHAT_MEDIA_LIMIT) { toast(isVideo ? "Keep videos short — under about 650 KB (roughly 10 seconds)" : "Choose a photo under 650 KB"); continue; }
     if (isVideo) {
       try {
         const duration = await probeMediaDuration(file, "video");
@@ -1066,12 +1114,13 @@ async function handlePickedFiles(fileList) {
       } catch { /* duration unknown — size cap still applies */ }
     }
     try {
-      const dataUrl = await new Promise((resolve, reject) => {
+      const dataUrl = isImage ? await compressImageToDataUrl(file) : await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
         reader.onerror = () => reject(new Error("We could not read that file"));
         reader.readAsDataURL(file);
       });
+      if (dataUrl.length > CHAT_DATAURL_BUDGET && !isImage) { toast("Keep videos short - under about 650 KB (roughly 10 seconds)"); continue; }
       pendingChatAttachments.push({ kind: isVideo ? "video" : "image", dataUrl, name: file.name || "attachment" });
       renderPendingAttachments();
     } catch (error) { toast(error.message); }
@@ -1104,6 +1153,7 @@ async function startVoiceRecording() {
   mediaRecorder.onstop = onRecordingStopped;
   mediaRecorder.start();
   recorderSeconds = 0;
+  document.querySelector(".chat")?.classList.add("is-recording");
   const recorder = $("#voiceRecorder");
   if (recorder) { recorder.hidden = false; const label = $("#recorderTime"); if (label) label.textContent = "0:00"; }
   recorderTimer = setInterval(() => {
@@ -1115,6 +1165,7 @@ async function startVoiceRecording() {
 }
 
 function cleanupRecording() {
+  document.querySelector(".chat")?.classList.remove("is-recording");
   clearInterval(recorderTimer);
   recorderTimer = null;
   if (mediaStream) { mediaStream.getTracks().forEach(track => track.stop()); mediaStream = null; }
@@ -1137,7 +1188,7 @@ function onRecordingStopped() {
   cleanupRecording();
   const recorder = $("#voiceRecorder");
   if (recorder) recorder.hidden = true;
-  const type = (mediaRecorder && mediaRecorder.mimeType) || "audio/webm";
+  const type = ((mediaRecorder && mediaRecorder.mimeType) || "audio/webm").split(";")[0];
   const blob = new Blob(mediaChunks, { type });
   mediaChunks = [];
   if (blob.size < 1200) { toast("That recording was too short to send"); return; }
