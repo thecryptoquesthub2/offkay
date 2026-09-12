@@ -187,12 +187,12 @@ function enterApp() {
 
 function renderNotificationDot() {
   const messageCount = Number(state.unreadMessages) || unreadTotal();
-  $(".msg-badge").forEach(node => {
+  $$(".msg-badge").forEach(node => {
     node.textContent = messageCount > 99 ? "99+" : String(messageCount);
     node.hidden = messageCount === 0;
   });
   const notifCount = Number(state.notificationsUnread) || 0;
-  $(".notif-badge").forEach(node => {
+  $$(".notif-badge").forEach(node => {
     node.textContent = notifCount > 99 ? "99+" : String(notifCount);
     node.hidden = notifCount === 0;
   });
@@ -294,7 +294,7 @@ function switchTab(tab, render = true) {
   if (tab !== "profile") state.settingsView = false;
   state.activeTab = tab;
   $$(".tab").forEach(node => node.classList.toggle("active", node.id === `tab-${tab}`));
-  $("[data-tab]").forEach(node => node.classList.toggle("active", node.dataset.tab === tab));
+  $$("[data-tab]").forEach(node => node.classList.toggle("active", node.dataset.tab === tab));
   if (render) {
     if (tab === "messages") renderMessages();
     if (tab === "explore") renderExplore();
