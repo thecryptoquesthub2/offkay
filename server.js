@@ -340,9 +340,10 @@ function ensureDb() {
   }
 }
 
-// File-mode mirror of the Mongo "demoSeed" state flag: marks that the one-time
-// demo seed already ran for this data directory so intentional deletions stick.
-function seedFlagFile() { return path.join(DATA_DIR, "demo-seeded"); }
+// File-mode mirror of the Mongo "demoSeed_v2" state flag: marks that the
+// one-time demo seed already ran for this data directory so intentional
+// deletions stick. Persisted together with the seeded content.
+function seedFlagFile() { return path.join(DATA_DIR, "demo-seeded-v2"); }
 function readSeedFlag() { try { return fs.existsSync(seedFlagFile()); } catch { return true; } }
 function writeSeedFlag() { try { fs.writeFileSync(seedFlagFile(), new Date().toISOString()); } catch {}}
 
@@ -447,7 +448,7 @@ async function loadDb() {
       if (!seed.users.some(user => user.id === "usr_landlord_demo")) { seed.listings = []; seed.saved = []; seed.conversations = []; seed.messages = []; }
       Object.assign(db, seed);
       db.demoSeedMarked = true;
-      writeSeedFlag();
+      await persistDb(db);
       console.log(`Database has no listings - seeded demo content (${seed.listings.length} listings, ${seed.users.length} demo accounts; one-time)`);
     }
     return db;
@@ -509,12 +510,13 @@ async function loadDb() {
   });
   // One-time Mongo seeding: a database with no listings at all gets the same
   // demo content as file mode — demo accounts, four sample listings, and the
-  // starter conversation. Guarded by a permanent flag in the state collection
-  // so it can never re-run after the content is intentionally deleted. Every
-  // demo record has a fixed id, so parallel cold starts converge idempotently.
+  // starter conversation. The seed is PERSISTED IMMEDIATELY (a GET request
+  // would otherwise show the content once and lose it), then a permanent flag
+  // in the state collection prevents re-seeding after intentional deletion.
+  // Every demo record has a fixed id, so concurrent cold starts converge.
   // Opt out entirely with OFFKAY_SEED_DEMO=0.
   if (process.env.OFFKAY_SEED_DEMO !== "0" && db.listings.length === 0) {
-    const seedFlag = await database.collection("state").findOne({ _id: "demoSeed" });
+    const seedFlag = await database.collection("state").findOne({ _id: "demoSeed_v2" });
     if (!seedFlag) {
       const seed = seedDb();
       const takenEmails = new Set(db.users.map(user => String(user.email || "").toLowerCase()));
@@ -524,7 +526,8 @@ async function loadDb() {
       const landlordPresent = seed.users.some(user => user.id === "usr_landlord_demo");
       if (!landlordPresent) { seed.listings = []; seed.saved = []; seed.conversations = []; seed.messages = []; }
       Object.assign(db, seed);
-      await database.collection("state").updateOne({ _id: "demoSeed" }, { $set: { seededAt: new Date().toISOString() } }, { upsert: true });
+      await persistDb(db);
+      await database.collection("state").updateOne({ _id: "demoSeed_v2" }, { $set: { seededAt: new Date().toISOString() } }, { upsert: true });
       console.log(`Database has no listings - seeded demo content (${seed.listings.length} listings, ${seed.users.length} demo accounts; one-time; set OFFKAY_SEED_DEMO=0 to disable)`);
     }
   }
