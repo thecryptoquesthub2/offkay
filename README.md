@@ -40,6 +40,8 @@ node scripts/security-test.js
 
 Set `MONGODB_URI` in the environment and all app state (users, sessions, listings, messages, bookings) persists to MongoDB Atlas; each collection is stored separately with stable natural keys. Without it, the app falls back to a local JSON file in `data/`, which is used by tests and local runs.
 
+On serverless hosting (Vercel), a missing `MONGODB_URI` is refused loudly: sign-up returns `503 — Offkay is not connected to a database, so new accounts cannot be saved…` instead of reporting a success it cannot keep (the old silent path produced "invalid credentials" on the next sign-in because each instance had its own throwaway data). Sign-in for the seeded demo accounts still works in that state. `GET /api/health` reports `storage: "ephemeral"` so you can detect the misconfiguration programmatically.
+
 ## Payments
 
 Payments run through Paystack checkout. Set `PAYSTACK_SECRET_KEY` in the environment to enable it; without a key the app falls back to a clearly-labeled demo confirmation flow. The flow is: create booking → initialize transaction server-side → Paystack hosted checkout → `/payment-callback.html` verifies the transaction server-side (amount-checked) → booking marked paid. A signed webhook (`POST /api/payments/webhook`) is also supported — point it at `https://your-domain/api/payments/webhook` in the Paystack dashboard as a backup confirmation path.

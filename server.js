@@ -377,6 +377,9 @@ function readDb() {
 // Persistence layer. On Vercel the filesystem is ephemeral, so when MONGODB_URI
 // is set the whole app state lives in one MongoDB document instead of db.json.
 const USE_MONGODB = Boolean(process.env.MONGODB_URI);
+// File mode on a serverless/ephemeral filesystem cannot retain writes between
+// requests. Signup must not report success when persistence cannot be trusted.
+const EPHEMERAL_FS = !USE_MONGODB && Boolean(process.env.VERCEL);
 
 let mongoDbPromise = null;
 function mongoDb() {
@@ -484,7 +487,32 @@ async function loadDb() {
     notifications: notifications.map(({ _id, ...rest }) => rest),
     connections: connections.map(({ _id, ...rest }) => rest)
   });
+  loadedKeys = snapshotKeys(db);
   return db;
+}
+
+// Stable document id per collection, shared by persist and the deletion diff.
+function stableIdOf(name, item) {
+  return item.id
+    || item.token
+    || (name === "saved" && item.userId && item.listingId ? `${item.userId}:${item.listingId}` : null)
+    || crypto.createHash("sha1").update(JSON.stringify(item)).digest("hex");
+}
+
+const PERSIST_COLLECTIONS = ["users","sessions","listings","saved","conversations","messages","bookings","inspections","reports","verifications"];
+
+// Keys present in the database at load time. persistDb diffs against this so
+// records REMOVED server-side (sign-out, expired-session pruning, account or
+// listing deletion) are actually deleted in Mongo instead of resurrecting on
+// the next load. API requests are serialized, so load→mutate→persist cycles
+// never interleave.
+let loadedKeys = null;
+function snapshotKeys(db) {
+  const snap = {};
+  for (const name of PERSIST_COLLECTIONS) {
+    snap[name] = new Set((db[name] || []).map(item => stableIdOf(name, item)));
+  }
+  return snap;
 }
 
 async function persistDb(db) {
@@ -507,18 +535,27 @@ async function persistDb(db) {
     notifications: db.notifications || [],
     connections: db.connections || []
   };
-  const stableId = (name, item) => item.id
-    || item.token
-    || (name === "saved" && item.userId && item.listingId ? `${item.userId}:${item.listingId}` : null)
-    || crypto.createHash("sha1").update(JSON.stringify(item)).digest("hex");
   const writes = Object.entries(collections).map(([name, items]) => {
     if (!items.length) return Promise.resolve();
     const collection = database.collection(name);
     return collection.bulkWrite(items.map(item => ({
-      replaceOne: { filter: { _id: stableId(name, item) }, replacement: { ...item, _id: stableId(name, item) }, upsert: true }
+      replaceOne: { filter: { _id: stableIdOf(name, item) }, replacement: { ...item, _id: stableIdOf(name, item) }, upsert: true }
     })), { ordered: false });
   });
+  // Diff deletions: everything loaded but no longer present is removed.
+  // Without this, sign-out / session-pruning / account deletion never reach
+  // Mongo and the records resurrect on the next load.
+  const currentKeys = snapshotKeys(db);
+  if (loadedKeys) {
+    for (const name of PERSIST_COLLECTIONS) {
+      const gone = [...loadedKeys[name]].filter(key => !currentKeys[name].has(key));
+      if (gone.length) {
+        writes.push(database.collection(name).deleteMany({ _id: { $in: gone } }));
+      }
+    }
+  }
   await Promise.all(writes);
+  loadedKeys = currentKeys;
 }
 
 function readDbShape(db) {
@@ -875,6 +912,10 @@ async function healthResponse(req, res) {
   const body = {
     ok: true,
     mode: USE_MONGODB ? "mongodb" : "file",
+    // "ephemeral" = writes will be lost on the next request (serverless without
+    // MONGODB_URI). Detectable misconfiguration for operators/monitors.
+    storage: USE_MONGODB ? "mongodb" : EPHEMERAL_FS ? "ephemeral" : "file",
+    ...(EPHEMERAL_FS ? { warning: "Serverless without MONGODB_URI: new sign-ups are refused because data cannot persist." } : {}),
     paymentsEnabled: Boolean(PAYSTACK_SECRET_KEY),
     time: new Date().toISOString()
   };
@@ -955,6 +996,12 @@ async function api(req, res, url) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return error(res, 400, "Enter a valid email address");
     if (password.length < 8) return error(res, 400, "Password must be at least 8 characters");
     if (db.users.some(item => item.email === email)) return error(res, 409, "An account with this email already exists. Try signing in instead.");
+    if (EPHEMERAL_FS) {
+      // Never report a successful account creation when the write cannot
+      // survive this request — that is what produces "invalid credentials"
+      // on the next sign-in.
+      return error(res, 503, "Offkay is not connected to a database, so new accounts cannot be saved. The operator needs to set MONGODB_URI (see README > Database). Sign-in for existing seeded demo accounts still works on this instance.");
+    }
     const university = universities.includes(body.university) ? body.university : universities[0];
     const newUser = {
       id:id("usr"), name, email, password:hashPassword(password), role,
