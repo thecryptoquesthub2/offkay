@@ -29,8 +29,54 @@ function loadDotEnvFile(file) {
   } catch {}
 }
 loadDotEnvFile(path.join(__dirname, ".env.local"));
+loadDotEnvFile(path.join(__dirname, ".env"));
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || "";
+
+/* ---- Auth additions ------------------------------------------------------
+   Password reset emails are sent through Resend when RESEND_API_KEY is set.
+   In dev (no key) reset emails are logged to the server console so the full
+   flow is testable without any external account.
+   Google OAuth uses the plain OAuth 2.0 code flow against GOOGLE_CLIENT_ID +
+   GOOGLE_CLIENT_SECRET (create OAuth credentials at console.cloud.google.com
+   with the app origin registered as an Authorized redirect URI). */
+const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const RESEND_FROM = process.env.RESEND_FROM || "Offkay <onboarding@resend.dev>";
+const RESET_TOKEN_TTL = 1000 * 60 * 30; // 30 minutes
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+
+async function sendPasswordResetEmail(to, resetUrl) {
+  const subject = "Reset your Offkay password";
+  const text = `You asked to reset your Offkay password. Open this link within 30 minutes to choose a new one:\n\n${resetUrl}\n\nIf you did not request this, you can safely ignore the email - your password stays unchanged.`;
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#14231d">
+    <p style="font-size:15px;line-height:1.6">Hi,</p>
+    <p style="font-size:15px;line-height:1.6">You asked to reset your Offkay password. Tap the button below within <b>30 minutes</b> to choose a new one.</p>
+    <p style="margin:26px 0"><a href="${resetUrl}" style="background:#0d7a56;color:#ffffff;text-decoration:none;padding:13px 26px;border-radius:12px;font-weight:700;display:inline-block">Choose a new password</a></p>
+    <p style="font-size:13px;line-height:1.6;color:#5b6b63">If the button does not work, copy this link into your browser:<br>${resetUrl}</p>
+    <p style="font-size:13px;line-height:1.6;color:#5b6b63">If you did not request a reset, ignore this email - your password stays unchanged.</p>
+  </div>`;
+  if (!RESEND_API_KEY) {
+    console.log(`[password-reset] RESEND_API_KEY not set - dev delivery. Reset link for ${to}: ${resetUrl}`);
+    return { delivered: false };
+  }
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from: RESEND_FROM, to: [to], subject, text, html })
+    });
+    if (!response.ok) {
+      console.error("Resend rejected the reset email:", response.status, (await response.text().catch(() => "")).slice(0, 300));
+      return { delivered: false };
+    }
+    const payload = await response.json().catch(() => ({}));
+    return { delivered: true, id: payload?.id };
+  } catch (err) {
+    console.error("Resend reset email request failed:", err?.message || err);
+    return { delivered: false };
+  }
+}
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "offkay-admin-dev";
 const NIN_KEY = crypto.createHash("sha256").update(process.env.NIN_ENCRYPTION_KEY || ADMIN_TOKEN).digest();
 const PAYSTACK_BASE = "https://api.paystack.co";
@@ -355,6 +401,7 @@ function readDb() {
   db.verifications ||= [];
   db.notifications ||= [];
   db.connections ||= [];
+  db.passwordResets ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
   const demoCoords = { lst_palm:[6.5158,3.3898], lst_maple:[7.4433,3.9008], lst_green:[6.8683,7.4064], lst_cedar:[7.5180,4.5230] };
   db.listings.forEach(listing => {
@@ -458,7 +505,7 @@ async function loadDb() {
     boom.status = 503;
     throw boom;
   }
-  const [meta, users, sessions, listings, saved, conversations, messages, bookings, inspections, reports, verifications, notifications, connections] = await Promise.all([
+  const [meta, users, sessions, listings, saved, conversations, messages, bookings, inspections, reports, verifications, notifications, connections, passwordResets] = await Promise.all([
     database.collection("state").findOne({ _id: "counters" }),
     database.collection("users").find({}).toArray(),
     database.collection("sessions").find({}).toArray(),
@@ -471,7 +518,8 @@ async function loadDb() {
     database.collection("reports").find({}).toArray(),
     database.collection("verifications").find({}).toArray(),
     database.collection("notifications").find({}).toArray(),
-    database.collection("connections").find({}).toArray()
+    database.collection("connections").find({}).toArray(),
+    database.collection("passwordResets").find({}).toArray()
   ]);
   const db = readDbShape({
     users: users.map(({ _id, ...rest }) => rest),
@@ -485,7 +533,8 @@ async function loadDb() {
     reports: reports.map(({ _id, ...rest }) => rest),
     verifications: verifications.map(({ _id, ...rest }) => rest),
     notifications: notifications.map(({ _id, ...rest }) => rest),
-    connections: connections.map(({ _id, ...rest }) => rest)
+    connections: connections.map(({ _id, ...rest }) => rest),
+    passwordResets: passwordResets.map(({ _id, ...rest }) => rest)
   });
   loadedKeys = snapshotKeys(db);
   return db;
@@ -499,7 +548,7 @@ function stableIdOf(name, item) {
     || crypto.createHash("sha1").update(JSON.stringify(item)).digest("hex");
 }
 
-const PERSIST_COLLECTIONS = ["users","sessions","listings","saved","conversations","messages","bookings","inspections","reports","verifications"];
+const PERSIST_COLLECTIONS = ["users","sessions","listings","saved","conversations","messages","bookings","inspections","reports","verifications","notifications","connections","passwordResets"];
 
 // Keys present in the database at load time. persistDb diffs against this so
 // records REMOVED server-side (sign-out, expired-session pruning, account or
@@ -533,7 +582,8 @@ async function persistDb(db) {
     reports: db.reports || [],
     verifications: db.verifications || [],
     notifications: db.notifications || [],
-    connections: db.connections || []
+    connections: db.connections || [],
+    passwordResets: db.passwordResets || []
   };
   const writes = Object.entries(collections).map(([name, items]) => {
     if (!items.length) return Promise.resolve();
@@ -571,6 +621,7 @@ function readDbShape(db) {
   db.verifications ||= [];
   db.notifications ||= [];
   db.connections ||= [];
+  db.passwordResets ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
   const demoCoords = { lst_palm:[6.5158,3.3898], lst_maple:[7.4433,3.9008], lst_green:[6.8683,7.4064], lst_cedar:[7.5180,4.5230] };
   db.listings.forEach(listing => {
@@ -767,6 +818,17 @@ function sessionCookie(req, token, maxAge) {
   const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
   const secure = proto === "https" ? "; Secure" : "";
   return `ch_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+// Secure attribute only (no name/value) for the auxiliary auth cookies.
+function sessionSecureSuffix(req) {
+  const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  return proto === "https" ? "; Secure" : "";
+}
+
+function redirect(res, status, location, headers = {}) {
+  res.writeHead(status, { "Location": location, "Cache-Control": "no-store", ...headers });
+  return res.end();
 }
 
 function error(res, status, message) {
@@ -995,6 +1057,10 @@ async function api(req, res, url) {
     if (name.length < 2 || name.length > 80) return error(res, 400, "Enter your full name");
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return error(res, 400, "Enter a valid email address");
     if (password.length < 8) return error(res, 400, "Password must be at least 8 characters");
+    if (password.length > 200) return error(res, 400, "Password must be 200 characters or fewer");
+    if (body.confirmPassword !== undefined && String(body.confirmPassword) !== password) {
+      return error(res, 400, "Passwords do not match");
+    }
     if (db.users.some(item => item.email === email)) return error(res, 409, "An account with this email already exists. Try signing in instead.");
     if (EPHEMERAL_FS) {
       // Never report a successful account creation when the write cannot
@@ -1021,7 +1087,7 @@ async function api(req, res, url) {
     if (!rateLimit(`ip:${ip}:login`, 30, 15 * 60_000)) return error(res, 429, "Too many sign-in attempts. Wait a few minutes.");
     const body = await parseBody(req);
     const account = db.users.find(item => item.email === String(body.email || "").trim().toLowerCase());
-    if (!account || !verifyPassword(body.password, account.password)) return error(res, 401, "Email or password is incorrect");
+    if (!account || !verifyPassword(String(body.password || ""), account.password)) return error(res, 401, "Email or password is incorrect");
     const token = id("ses");
     db.sessions.push({token,userId:account.id,expiresAt:Date.now()+SESSION_TTL});
     await persistDb(db);
@@ -1062,6 +1128,172 @@ async function api(req, res, url) {
     account.password = hashPassword(next);
     await persistDb(db);
     return json(res, 200, {ok:true});
+  }
+
+  /* ---- Google OAuth 2.0 (authorization-code flow) -----------------------
+     GET  /api/auth/google → 302 to Google's consent screen (state cookie).
+     GET  /api/auth/google/callback → exchanges the code, finds-or-links the
+     Offkay account by verified Google email (never creating a duplicate for
+     an existing address), issues the normal session cookie, then redirects
+     into the app. */
+  if (route === "/api/auth/google" && method === "GET") {
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+      return error(res, 503, "Google sign-in is not configured on this server yet. The operator needs to set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (see README > Google sign-in).");
+    }
+    if (!rateLimit(`ip:${ip}:google`, 30, 60 * 60_000)) return error(res, 429, "Too many sign-in attempts. Wait a few minutes.");
+    const origin = requestUrl(req);
+    if (!origin) return error(res, 400, "Cannot determine the request origin");
+    const state = crypto.randomBytes(16).toString("hex");
+    const params = new URLSearchParams({
+      client_id: GOOGLE_CLIENT_ID,
+      redirect_uri: `${origin}/api/auth/google/callback`,
+      response_type: "code",
+      scope: "openid email profile",
+      state,
+      prompt: "select_account"
+    });
+    return redirect(res, 302, `https://accounts.google.com/o/oauth2/v2/auth?${params}`, {
+      "Set-Cookie": `g_state=${state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${sessionSecureSuffix(req)}`
+    });
+  }
+
+  if (route === "/api/auth/google/callback" && method === "GET") {
+    const fail = reason => redirect(res, 302, `/index.html?authError=${encodeURIComponent(reason)}`);
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) return fail("Google sign-in is not configured on this server yet.");
+    const params = url.searchParams;
+    if (params.get("error")) return fail(params.get("error") === "access_denied" ? "Google sign-in was cancelled. Try again any time." : "Google sign-in failed. Please try again.");
+    const code = params.get("code") || "";
+    const state = params.get("state") || "";
+    const cookieState = parseCookies(req).g_state || "";
+    if (!code) return fail("Google did not return an authorization code. Please try again.");
+    if (!state || !cookieState || state !== cookieState) return fail("Your sign-in session expired. Please try again.");
+    let idInfo = null;
+    try {
+      const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          code,
+          client_id: GOOGLE_CLIENT_ID,
+          client_secret: GOOGLE_CLIENT_SECRET,
+          redirect_uri: `${requestUrl(req)}/api/auth/google/callback`,
+          grant_type: "authorization_code"
+        })
+      });
+      const tokens = await tokenResponse.json().catch(() => ({}));
+      if (!tokenResponse.ok || !tokens.id_token) {
+        console.error("Google token exchange failed:", tokenResponse.status, JSON.stringify(tokens).slice(0, 300));
+        return fail("Google sign-in failed during account verification. Please try again.");
+      }
+      const [headerPart, payloadPart] = String(tokens.id_token).split(".");
+      idInfo = JSON.parse(Buffer.from(payloadPart, "base64").toString("utf8"));
+    } catch (err) {
+      console.error("Google OAuth request failed:", err?.message || err);
+      return fail("Google sign-in failed. Please try again in a moment.");
+    }
+    const googleSub = String(idInfo.sub || "");
+    const googleEmail = String(idInfo.email || "").trim().toLowerCase();
+    const emailVerified = idInfo.email_verified !== false;
+    const displayName = String(idInfo.name || googleEmail.split("@")[0] || "Offkay member").slice(0, 80);
+    if (!googleSub || !googleEmail || !emailVerified) return fail("Your Google account does not share a verified email, so Offkay cannot use it to sign in.");
+    // Prefer the linked OAuth identity; otherwise claim the matching existing
+    // account by email so Google users never spawn duplicate accounts.
+    let account = db.users.find(item => item.oauthProvider === "google" && item.oauthId === googleSub)
+      || db.users.find(item => item.email === googleEmail);
+    if (EPHEMERAL_FS && !account) {
+      return fail("Offkay is not connected to a database, so new accounts cannot be saved. Existing members can still use email sign-in.");
+    }
+    if (!account) {
+      account = {
+        id: id("usr"), name: displayName, email: googleEmail, password: "",
+        role: "tenant", phone: "", university: universities[0], verified: false,
+        bio: "", budget: 0, habits: [], createdAt: new Date().toISOString(),
+        oauthProvider: "google", oauthId: googleSub
+      };
+      db.users.push(account);
+      notify(db, account.id, { type: "system", title: "Welcome to Offkay", body: "Add your university, budget, and lifestyle so roommates can find you.", actorId: null, meta: {} });
+    } else if (!account.oauthProvider) {
+      // First Google sign-in on an email-password account: link the identity.
+      // The password stays intact, so email sign-in keeps working.
+      account.oauthProvider = "google";
+      account.oauthId = googleSub;
+    }
+    const token = id("ses");
+    db.sessions.push({ token, userId: account.id, expiresAt: Date.now() + SESSION_TTL });
+    await persistDb(db);
+    return redirect(res, 302, "/index.html?authSuccess=google", {
+      "Set-Cookie": [
+        sessionCookie(req, token, 2592000),
+        `g_state=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${sessionSecureSuffix(req)}`
+      ]
+    });
+  }
+
+  /* ---- Password reset ---------------------------------------------------
+     POST /api/auth/forgot { email } — issues a single-use token (hashed at
+     rest), emails the reset link, always answers 200 so the endpoint cannot
+     be used to discover which addresses have accounts.
+     GET  /api/auth/reset/:token — validates a token for the reset screen.
+     POST /api/auth/reset { token, password, confirmPassword } — completes it. */
+  if (route === "/api/auth/forgot" && method === "POST") {
+    if (!rateLimit(`ip:${ip}:forgot`, 10, 60 * 60_000)) return error(res, 429, "Too many reset requests. Try again in a little while.");
+    const body = await parseBody(req);
+    const email = String(body.email || "").trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return error(res, 400, "Enter a valid email address");
+    const account = db.users.find(item => item.email === email);
+    const generic = { ok: true, message: "If an Offkay account exists for that email, a reset link is on its way. It expires in 30 minutes." };
+    if (!account) return json(res, 200, generic);
+    // A fresh request retires any outstanding token so only the newest email works.
+    db.passwordResets = (db.passwordResets || []).filter(item => item.userId !== account.id);
+    const token = crypto.randomBytes(32).toString("hex");
+    db.passwordResets.push({
+      userId: account.id,
+      tokenHash: crypto.createHash("sha256").update(token).digest("hex"),
+      expiresAt: Date.now() + RESET_TOKEN_TTL
+    });
+    await persistDb(db);
+    const origin = requestUrl(req);
+    if (!origin) return error(res, 400, "Cannot determine the request origin");
+    const resetUrl = `${origin}/reset.html?token=${token}`;
+    const delivery = await sendPasswordResetEmail(account.email, resetUrl);
+    return json(res, 200, { ...generic, devMode: !RESEND_API_KEY, delivered: delivery.delivered });
+  }
+
+  const resetVerifyMatch = route.match(/^\/api\/auth\/reset\/([a-f0-9]{64})$/);
+  if (resetVerifyMatch && method === "GET") {
+    const tokenHash = crypto.createHash("sha256").update(resetVerifyMatch[1]).digest("hex");
+    const record = (db.passwordResets || []).find(item => item.tokenHash === tokenHash && item.expiresAt > Date.now());
+    if (!record) return error(res, 400, "This reset link is invalid or has expired. Request a new one from the sign-in screen.");
+    return json(res, 200, { ok: true });
+  }
+
+  if (route === "/api/auth/reset" && method === "POST") {
+    if (!rateLimit(`ip:${ip}:reset`, 20, 60 * 60_000)) return error(res, 429, "Too many attempts. Try again in a little while.");
+    const body = await parseBody(req);
+    const token = String(body.token || "").trim();
+    const password = String(body.password || "");
+    if (!/^[a-f0-9]{64}$/.test(token)) return error(res, 400, "This reset link is invalid. Request a new one from the sign-in screen.");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const record = (db.passwordResets || []).find(item => item.tokenHash === tokenHash && item.expiresAt > Date.now());
+    if (!record) return error(res, 400, "This reset link is invalid or has expired. Request a new one from the sign-in screen.");
+    if (password.length < 8) return error(res, 400, "Password must be at least 8 characters");
+    if (password.length > 200) return error(res, 400, "Password must be 200 characters or fewer");
+    if (body.confirmPassword !== undefined && String(body.confirmPassword) !== password) {
+      return error(res, 400, "Passwords do not match");
+    }
+    const account = db.users.find(item => item.id === record.userId);
+    if (!account) {
+      db.passwordResets = (db.passwordResets || []).filter(item => item !== record);
+      await persistDb(db);
+      return error(res, 400, "This reset link is invalid. Request a new one from the sign-in screen.");
+    }
+    account.password = hashPassword(password);
+    // Single-use: retire every reset token and end all sessions, forcing a
+    // fresh sign-in with the new password on every device.
+    db.passwordResets = (db.passwordResets || []).filter(item => item.userId !== account.id);
+    db.sessions = db.sessions.filter(item => item.userId !== account.id);
+    await persistDb(db);
+    return json(res, 200, { ok: true, message: "Password updated. Sign in with your new password." });
   }
 
   if (route === "/api/profile" && method === "PATCH") {

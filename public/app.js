@@ -170,18 +170,134 @@ function closeModal() {
   state.openProfileId = null;
 }
 
+const FORMS = ["loginForm", "signupForm", "forgotForm", "resetForm"];
+const FORM_COPY = {
+  loginForm: ["Offkay", "Sign in", "Access your housing, messages, and bookings."],
+  signupForm: ["Join Offkay", "Create your account", "Choose how you will use Offkay. You can update your details later."],
+  forgotForm: ["Account help", "Reset your password", "We will email you a secure link to choose a new password."],
+  resetForm: ["Account help", "Choose a new password", "Pick a new password for your Offkay account."]
+};
+
 function setAuthMode(mode) {
-  const signup = mode === "signup";
-  $("#loginForm").classList.toggle("hidden", signup);
-  $("#signupForm").classList.toggle("hidden", !signup);
-  $("#authEyebrow").textContent = signup ? "Join Offkay" : "Offkay";
-  $("#authTitle").textContent = signup ? "Create your account" : "Sign in";
-  $("#authSubtitle").textContent = signup
-    ? "Choose how you will use Offkay. You can update your details later."
-    : "Access your housing, messages, and bookings.";
+  const active = `${mode}Form`;
+  FORMS.forEach(id => $(`#${id}`).classList.toggle("hidden", id !== active));
+  const [eyebrow, title, subtitle] = FORM_COPY[active] || FORM_COPY.loginForm;
+  $("#authEyebrow").textContent = eyebrow;
+  $("#authTitle").textContent = title;
+  $("#authSubtitle").textContent = subtitle;
+  showAuthBanner("");
+}
+
+// Inline status banner above the active auth form (no dead toasts for
+// OAuth redirects, reset-link states, or form-level validation errors).
+function showAuthBanner(kind, text = "") {
+  const banner = $("#authBanner");
+  if (!banner) return;
+  if (!kind || !text) { banner.classList.add("hidden"); banner.textContent = ""; return; }
+  banner.className = `auth-banner ${kind}`;
+  banner.textContent = text;
+}
+
+function authModeFromForm(form) {
+  return form.id.replace(/Form$/, "");
+}
+
+// Show/hide password toggles: one delegated listener covers every field,
+// including ones inside modals (change-password sheet) and reset.html.
+function bindPasswordToggles() {
+  document.addEventListener("click", event => {
+    const button = event.target.closest(".pw-toggle[data-toggle-for]");
+    if (!button) return;
+    const input = button.parentElement.querySelector("input");
+    if (!input) return;
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    button.classList.toggle("visible", show);
+    button.setAttribute("aria-pressed", String(show));
+    button.setAttribute("aria-label", show ? "Hide password" : "Show password");
+  });
+}
+
+/* ---- Forgot password / reset flow --------------------------------------- */
+let resetToken = "";
+
+async function forgotPassword(event) {
+  event.preventDefault();
+  const button = event.submitter;
+  setLoading(button, true, "Sending link...");
+  showAuthBanner("");
+  try {
+    const email = String(new FormData(event.currentTarget).get("email") || "").trim();
+    const data = await request("/api/auth/forgot", { method: "POST", body: JSON.stringify({ email }) });
+    setAuthMode("login");
+    showAuthBanner("ok", data.message || "If an Offkay account exists for that email, a reset link is on its way.");
+    if (data.devMode) showAuthBanner("ok", `${data.message} (Dev mode: no RESEND_API_KEY is configured, so the link is printed in the server console.)`);
+  } catch (error) {
+    showAuthBanner("error", error.message);
+  } finally { setLoading(button, false); }
+}
+
+// Entry point from the emailed link (?token=...). Verifies the token, then
+// shows the new-password form on the main screen.
+async function startResetFlow(token) {
+  setAuthMode("reset");
+  showAuth();
+  resetToken = token;
+  showAuthBanner("");
+  if (!/^[a-f0-9]{64}$/.test(token)) {
+    setAuthMode("forgot");
+    showAuthBanner("error", "This password-reset link is invalid. Request a fresh link below.");
+    return;
+  }
+  try {
+    await request(`/api/auth/reset/${encodeURIComponent(token)}`);
+    showAuthBanner("ok", "Reset link verified. Choose your new password below.");
+  } catch (error) {
+    setAuthMode("forgot");
+    showAuthBanner("error", error.message || "This reset link is invalid or has expired. Request a new one.");
+  }
+}
+
+async function submitReset(event) {
+  event.preventDefault();
+  const button = event.submitter;
+  const values = Object.fromEntries(new FormData(event.currentTarget));
+  if (values.password !== values.confirmPassword) {
+    showAuthBanner("error", "Passwords do not match - re-enter them so both fields are identical.");
+    return;
+  }
+  setLoading(button, true, "Updating password...");
+  showAuthBanner("");
+  try {
+    const data = await request("/api/auth/reset", { method: "POST", body: JSON.stringify({ token: resetToken, password: values.password, confirmPassword: values.confirmPassword }) });
+    resetToken = "";
+    event.currentTarget.reset();
+    setAuthMode("login");
+    showAuthBanner("ok", data.message || "Password updated. Sign in with your new password.");
+  } catch (error) {
+    showAuthBanner("error", error.message);
+    if (/invalid or expired/i.test(error.message)) setAuthMode("forgot");
+  } finally { setLoading(button, false); }
+}
+
+// Post-OAuth landing (?authError=... / ?authSuccess=google) and post-reset
+// return (?reset=done) surface their outcome here, then clean the URL.
+function consumeAuthQueryFlags() {
+  const params = new URLSearchParams(location.search);
+  const authError = params.get("authError");
+  const resetDone = params.get("reset") === "done";
+  const googleSuccess = params.get("authSuccess") === "google";
+  if (!authError && !resetDone && !googleSuccess) return;
+  params.delete("authError"); params.delete("authSuccess"); params.delete("reset");
+  history.replaceState(null, "", location.pathname + (params.toString() ? `?${params}` : ""));
+  const banner = (kind, text) => { showAuth(); setAuthMode("login"); showAuthBanner(kind, text); };
+  if (authError) return banner("error", authError);
+  if (resetDone) return banner("ok", "Password updated. Sign in with your new password.");
+  if (googleSuccess) return banner("ok", "Google sign-in complete. Finishing up...");
 }
 
 async function bootstrap() {
+  consumeAuthQueryFlags();
   try {
     const data = await request("/api/bootstrap");
     Object.assign(state, data);
@@ -868,8 +984,8 @@ function passwordSheet() {
   modal(`
     <div class="modal-head"><div><span class="eyebrow">Privacy &amp; security</span><h2>Change password</h2><p>Your new password must be at least 8 characters.</p></div><button class="close-button">&times;</button></div>
     <form class="sheet-form" id="passwordForm">
-      <label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required></label>
-      <label>New password<input name="newPassword" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label>Current password<div class="password-field"><input name="currentPassword" type="password" autocomplete="current-password" required><button type="button" class="pw-toggle" data-toggle-for aria-label="Show password" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></div></label>
+      <label>New password<div class="password-field"><input name="newPassword" type="password" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" data-toggle-for aria-label="Show password" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></div></label>
       <button class="button primary wide" type="submit">Update password</button>
     </form>`);
   $("#passwordForm").onsubmit = async event => {
@@ -1510,7 +1626,15 @@ function bindEvents() {
     const tab = event.target.closest("[data-tab]");
     if (tab && state.user) { event.preventDefault(); switchTab(tab.dataset.tab); return; }
     const auth = event.target.closest("[data-auth-mode]");
-    if (auth) return setAuthMode(auth.dataset.authMode);
+    if (auth) {
+      setAuthMode(auth.dataset.authMode);
+      return;
+    }
+    const google = event.target.closest("[data-google]");
+    if (google) {
+      window.location.href = "/api/auth/google";
+      return;
+    }
     const role = event.target.closest("[data-role]");
     if (role) {
       $$(".role-option").forEach(item=>item.classList.toggle("active",item===role));
@@ -1598,6 +1722,8 @@ function bindEvents() {
   $("#modalRoot").addEventListener("click", event => { if(event.target===$("#modalRoot")) closeModal(); });
   $("#loginForm").addEventListener("submit", login);
   $("#signupForm").addEventListener("submit", signup);
+  $("#forgotForm").addEventListener("submit", forgotPassword);
+  $("#resetForm").addEventListener("submit", submitReset);
   $("#logoutButton").addEventListener("click", confirmLogout);
   $("#globalSearch").addEventListener("keydown", event => {
     if (event.key === "Enter") {
@@ -1653,31 +1779,46 @@ async function login(event) {
     const values=Object.fromEntries(new FormData(event.currentTarget));
     const data=await request("/api/auth/login",{method:"POST",body:JSON.stringify(values)});
     state.user=data.user;await refreshData(false);enterApp();toast(`Welcome back, ${firstName(state.user.name)}`);
-  } catch(error){toast(isDbDown(error) ? dbDownMessage() : error.message)}
+  } catch(error){
+    showAuthBanner("error", isDbDown(error) ? dbDownMessage() : error.message);
+  }
   finally{setLoading(button,false)}
 }
 
 async function signup(event) {
   event.preventDefault();
+  const form = event.currentTarget;
   const button=event.submitter;setLoading(button,true,"Creating account...");
+  showAuthBanner("");
   try {
-    const values=Object.fromEntries(new FormData(event.currentTarget));
-    const data=await request("/api/auth/signup",{method:"POST",body:JSON.stringify(values)});
+    const values=Object.fromEntries(new FormData(form));
+    if (values.password !== values.confirmPassword) {
+      showAuthBanner("error", "Passwords do not match - re-enter them so both fields are identical.");
+      return;
+    }
+    const { confirmPassword, ...payload } = values;
+    const data=await request("/api/auth/signup",{method:"POST",body:JSON.stringify(payload)});
     state.user=data.user;await refreshData(false);enterApp();toast("Your Offkay account is ready");
   } catch(error){
     if (error.message.includes("already exists")) {
       setAuthMode("login");
       const savedEmail = $("#signupForm [name=email]")?.value || "";
       if (savedEmail) $("#loginForm [name=email]").value = savedEmail;
-      toast("That email is registered. Sign in instead - details pre-filled.");
+      showAuthBanner("error", "That email is registered. Sign in instead - details pre-filled.");
+    } else if (error.message.includes("Passwords do not match")) {
+      showAuthBanner("error", "Passwords do not match - re-enter them so both fields are identical.");
     } else {
       // Storage failures get the server's actionable message verbatim (missing
-      // MONGODB_URI etc.); only transient connection blips get the generic toast.
-      toast(/cannot be saved/i.test(error.message) ? error.message : (isDbDown(error) ? dbDownMessage() : error.message));
+      // MONGODB_URI etc.); other errors surface in the inline banner.
+      showAuthBanner("error", /cannot be saved/i.test(error.message) ? error.message : (isDbDown(error) ? dbDownMessage() : error.message));
     }
   }
   finally{setLoading(button,false)}
 }
 
 bindEvents();
+bindPasswordToggles();
+consumeAuthQueryFlags();
+const urlToken = new URLSearchParams(location.search).get("token");
+if (urlToken && !state.user) startResetFlow(urlToken);
 bootstrap();

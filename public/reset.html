@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#FAFAFA">
+  <meta name="description" content="Choose a new password for your Offkay account.">
+  <meta name="robots" content="noindex">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css?v=5">
+  <title>Reset password · Offkay</title>
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"><i></i><i></i><i></i></div>
+
+  <section class="auth-screen">
+    <div class="auth-panel">
+      <div class="auth-box glass">
+        <div class="mobile-brand brand"><img class="brand-logo" src="/offkay-mark.png" alt=""><span>offkay</span></div>
+        <div class="auth-heading">
+          <span class="eyebrow">Offkay</span>
+          <h2 id="pageTitle">Choose a new password</h2>
+          <p id="pageSubtitle">Pick a new password for your Offkay account.</p>
+        </div>
+
+        <div id="resetBanner" class="auth-banner hidden" role="alert"></div>
+
+        <form id="resetForm" class="form-stack">
+          <label>New password
+            <div class="password-field">
+              <input name="password" type="password" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" required>
+              <button type="button" class="pw-toggle" data-toggle-for aria-label="Show password" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+            </div>
+          </label>
+          <label>Confirm new password
+            <div class="password-field">
+              <input name="confirmPassword" type="password" autocomplete="new-password" minlength="8" placeholder="Re-enter your new password" required>
+              <button type="button" class="pw-toggle" data-toggle-for aria-label="Show password" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+            </div>
+          </label>
+          <button class="button primary wide" type="submit" id="resetSubmit">Update password <span>&rarr;</span></button>
+          <button class="text-button" type="button" onclick="location.href='/index.html'">Back to <b>sign in</b></button>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script>
+  (function () {
+    "use strict";
+    const $ = s => document.querySelector(s);
+    const params = new URLSearchParams(location.search);
+    const token = String(params.get("token") || "").trim();
+    const banner = $("#resetBanner");
+    const form = $("#resetForm");
+    const submit = $("#resetSubmit");
+    let tokenValid = false;
+
+    function showBanner(kind, text) {
+      banner.className = `auth-banner ${kind}`;
+      banner.textContent = text;
+    }
+
+    function toast(message) {
+      const el = $("#toast");
+      el.textContent = message;
+      el.classList.add("show");
+      setTimeout(() => el.classList.remove("show"), 2600);
+    }
+
+    // Password visibility toggles (eye icon, hidden by default).
+    document.querySelectorAll(".pw-toggle[data-toggle-for]").forEach(button => {
+      button.addEventListener("click", () => {
+        const input = button.parentElement.querySelector("input");
+        if (!input) return;
+        const show = input.type === "password";
+        input.type = show ? "text" : "password";
+        button.classList.toggle("visible", show);
+        button.setAttribute("aria-pressed", String(show));
+        button.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      });
+    });
+
+    if (!token) {
+      showBanner("error", "This password-reset link is incomplete. Request a fresh link from the sign-in screen.");
+    } else if (!/^[a-f0-9]{64}$/.test(token)) {
+      showBanner("error", "This password-reset link is invalid. Request a fresh link from the sign-in screen.");
+    }
+
+    (async () => {
+      if (!/^[a-f0-9]{64}$/.test(token)) return;
+      try {
+        const res = await fetch(`/api/auth/reset/${encodeURIComponent(token)}`);
+        const payload = await res.json().catch(() => ({}));
+        if (res.ok) {
+          tokenValid = true;
+          showBanner("ok", "Reset link verified. Choose your new password below.");
+        } else {
+          showBanner("error", payload.error || "This reset link is invalid or has expired. Request a new one from the sign-in screen.");
+        }
+      } catch {
+        showBanner("error", "Offkay could not be reached to verify this link. Check your connection and refresh.");
+      }
+    })();
+
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      const data = new FormData(form);
+      const password = String(data.get("password") || "");
+      const confirmPassword = String(data.get("confirmPassword") || "");
+      if (password !== confirmPassword) {
+        showBanner("error", "Passwords do not match - re-enter them so both fields are identical.");
+        return;
+      }
+      if (password.length < 8) {
+        showBanner("error", "Password must be at least 8 characters.");
+        return;
+      }
+      if (!tokenValid) {
+        showBanner("error", "This reset link is invalid or has expired. Request a new one from the sign-in screen.");
+        return;
+      }
+      submit.disabled = true;
+      const original = submit.innerHTML;
+      submit.textContent = "Updating password...";
+      try {
+        const res = await fetch("/api/auth/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, password, confirmPassword })
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (res.ok) {
+          document.querySelector(".auth-heading h2").textContent = "Password updated";
+          $("#pageSubtitle").textContent = "Your password has been changed. Sign in with the new one.";
+          form.classList.add("hidden");
+          banner.className = "auth-banner ok";
+          banner.textContent = "All done - your password has been changed. Taking you to sign in...";
+          setTimeout(() => { location.href = "/index.html?reset=done"; }, 1600);
+        } else {
+          showBanner("error", payload.error || "The password could not be updated. Request a fresh reset link and try again.");
+          submit.disabled = false;
+          submit.innerHTML = original;
+        }
+      } catch {
+        showBanner("error", "Offkay could not be reached. Check your connection and try again.");
+        submit.disabled = false;
+        submit.innerHTML = original;
+      }
+    });
+  })();
+  </script>
+</body>
+</html>
