@@ -524,6 +524,34 @@ button.roommate-avatar{border:0;color:white;font-weight:750;background:var(--pri
    the horizontal card row; phones get a designed vertical experience.
    ========================================================================== */
 .explore-main{max-width:1060px;margin:0 auto}
+
+/* ==========================================================================
+   HOME REFINEMENT — calm starting point: hero -> your activity (only when
+   real data exists) -> recommended -> roommate nudge. Mobile reorders to
+   recommendations first, keeps single column.
+   ========================================================================== */
+.home-main{max-width:1060px;margin:0 auto}
+.home-activity{display:grid;margin:0 0 4px;border-radius:var(--radius-large,24px);padding:5px 18px}
+.home-activity-row{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--border)}
+.home-activity-row:last-child{border-bottom:0}
+.home-activity-text{flex:1;min-width:0;display:grid;gap:2px}
+.home-activity-text b{font-size:13.5px}
+.home-activity-text span{color:var(--text-secondary);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-transform:capitalize}
+.home-activity .metric-icon{flex:0 0 auto}
+.home-activity .link-button{flex:0 0 auto}
+.home-roommate{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:26px 0 8px;padding:18px 20px;border-radius:var(--radius-large,24px)}
+.home-roommate b{display:block;font-size:15px}
+.home-roommate span{display:block;margin-top:3px;color:var(--text-secondary);font-size:13px}
+@media(max-width:820px){
+  .home-main{display:flex;flex-direction:column}
+  .home-main .home-recommended{order:1}
+  .home-main .home-activity{order:2}
+  .home-main .home-roommate{order:3}
+  .hero-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  .home-roommate{flex-direction:column;align-items:flex-start;margin-top:22px}
+  .home-roommate .button{width:100%;min-height:48px}
+  .home-activity{padding:4px 15px}
+}
 .explore-eyebrow{display:block;font-size:12px;font-weight:750;letter-spacing:.11em;text-transform:uppercase;color:var(--primary,var(--green))}
 .explore-hero{margin:2px 0 26px}
 .explore-hero h1{margin:9px 0 8px;font-size:34px;line-height:1.12;letter-spacing:-.045em;font-weight:800;max-width:22ch}
@@ -544,7 +572,7 @@ select.filter-pill{padding-right:32px;background-image:url("data:image/svg+xml;c
 .filter-pill .off-icon{width:14px;height:14px;flex:0 0 auto}
 .filter-pill:focus-visible{outline:3px solid color-mix(in srgb,var(--primary) 40%,transparent);outline-offset:2px}
 .filter-pill.set{border-color:color-mix(in srgb,var(--primary) 45%,var(--border));background:color-mix(in srgb,var(--primary) 7%,var(--surface-strong));color:var(--primary,var(--green));font-weight:680}
-.filter-pill.toggle.set{background:color-mix(in srgb,var(--primary) 10%,var(--surface-strong))}
+.filter-pill.pill-toggle.set{background:color-mix(in srgb,var(--primary) 10%,var(--surface-strong))}
 .filter-pill-input{flex:1 1 190px}
 .filter-pill-count{display:inline-grid;place-items:center;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:var(--primary);color:var(--primary-ink);font:750 10.5px var(--font-ui)}
 .results-head{display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin:20px 2px 14px}
@@ -571,6 +599,8 @@ select.filter-pill{padding-right:32px;background-image:url("data:image/svg+xml;c
 }
 .listing-image .quiet-tag{position:static;display:inline-block;margin:10px 0 0 12px;padding:5px 10px;border-radius:999px;background:rgba(255,255,255,.82);color:var(--text);font-size:10px;font-weight:680;backdrop-filter:blur(8px)}
 .listing-open{width:38px;height:38px;flex:0 0 auto;display:grid;place-items:center;border-radius:12px;background:rgba(13,122,86,.08);color:var(--green);font-size:17px}
+.listing-card[role="link"]{cursor:pointer}
+.listing-card[role="link"]:focus-visible{outline:3px solid color-mix(in srgb,var(--primary) 45%,transparent);outline-offset:3px}
 .sheet-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:6px}
 @media(max-width:699px){
   .explore-list .listing-card{padding:0;overflow:hidden;border-radius:var(--radius-medium,20px)}
