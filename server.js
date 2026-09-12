@@ -844,6 +844,7 @@ function listingPayload(listing, db, user) {
   return {
     ...publicListing,
     owner: owner ? { id:owner.id, name:owner.name, verified:owner.verified } : null,
+    hostView: Boolean(owner && (owner.verified === true || owner.role === "landlord")),
     saved: Boolean(user && db.saved.some(item => item.userId === user.id && item.listingId === listing.id)),
     proximity: proximityPayload(listing),
     ...listingOccupancy(listing, db)
@@ -864,7 +865,7 @@ function conversationPayload(conversation, db, viewerId) {
     listingTitle: listing ? listing.title : null,
     updatedAt: conversation.updatedAt,
     other: profileView(other),
-    lastMessage: last || null,
+    lastMessage: last ? { ...last, text: last.text || (last.attachments?.length ? (last.attachments[0].mime.startsWith("video/") ? "Video" : last.attachments[0].mime.startsWith("image/") ? "Photo" : "Voice note") : "") } : null,
     unread
   };
 }
@@ -1457,14 +1458,47 @@ async function api(req, res, url) {
     if (!conversation) return error(res,404,"Conversation not found");
     const body = await parseBody(req);
     const text = String(body.text || "").trim();
-    if (!text) return error(res,400,"Message cannot be empty");
+    const attachments = Array.isArray(body.attachments) ? body.attachments : [];
+    if (!text && !attachments.length) return error(res,400,"Message cannot be empty");
+    /* Attachments (images, short videos, voice notes) are stored as data URLs
+       inside the existing messages collection - the same approach listing
+       photos already use. Validation: type allowlist, per-file and total
+       size caps that fit the 2 MB JSON body limit; video duration is capped
+       client-side before upload. No second media system - this IS the
+       messages storage. */
+    const MAX_SINGLE = 900000, MAX_TOTAL = 1500000, MAX_FILES = 3;
+    const ALLOWED = {
+      "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+      "video/mp4": ".mp4", "video/webm": ".webm",
+      "audio/webm": ".webm", "audio/mp4": ".m4a", "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "audio/wav": ".wav"
+    };
+    const cleaned = [];
+    let totalBytes = 0;
+    for (const a of attachments.slice(0, MAX_FILES)) {
+      const dataUrl = String(a?.dataUrl || "");
+      const meta = String(a?.meta || "audio");
+      const match = dataUrl.match(/^data:([\w./+-]+);base64,([A-Za-z0-9+\/=]+)$/);
+      if (!match) return error(res,400,"Attachment must be a base64 data URL");
+      const mime = match[1].toLowerCase();
+      if (!ALLOWED[mime]) return error(res,415,"Unsupported attachment type. Use images, short videos, or voice notes.");
+      const bytes = Math.floor(match[2].length * 0.75);
+      if (bytes > MAX_SINGLE) return error(res,413,"Attachment too large. Keep files under about 650 KB.");
+      totalBytes += bytes;
+      if (totalBytes > MAX_TOTAL) return error(res,413,"Attachments too large for one message.");
+      cleaned.push({ mime, name: String(a?.name || "attachment" + ALLOWED[mime]).slice(0,60), bytes, meta: meta.slice(0,120), dataUrl });
+    }
     const message = {id:id("msg"),conversationId:conversation.id,senderId:account.id,text:text.slice(0,2000),createdAt:new Date().toISOString()};
+    if (cleaned.length) message.attachments = cleaned.map(({mime,name,bytes,meta,dataUrl}) => ({mime,name,bytes,meta,dataUrl}));
     db.messages.push(message);
     conversation.updatedAt = message.createdAt;
     conversation.reads[account.id] = message.createdAt;
+    const previewBits = cleaned[0]
+      ? (cleaned[0].mime.startsWith("video/") ? "Video" : cleaned[0].mime.startsWith("image/") ? "Photo" : "Voice note")
+      : null;
+    const previewText = text || (previewBits ? (cleaned.length > 1 ? previewBits + " (" + cleaned.length + ")" : previewBits) : "");
     const recipient = db.users.find(item => conversation.memberIds.includes(item.id) && item.id !== account.id);
     if (recipient && recipient.notifyMessages !== false) {
-      notify(db, recipient.id, { type:"message", title:`New message from ${account.name}`, body:text.slice(0,120), actorId:account.id, meta:{ conversationId:conversation.id } });
+      notify(db, recipient.id, { type:"message", title:`New message from ${account.name}`, body:previewText.slice(0,120), actorId:account.id, meta:{ conversationId:conversation.id } });
     }
     await persistDb(db);
     return json(res,201,{message});

@@ -437,3 +437,28 @@ button.roommate-avatar{border:0;color:white;font-weight:750;background:var(--pri
 @media(min-width:850px){.float-stat{position:static;margin-top:12px;width:max-content;max-width:260px}}
 
 .listing-grid{scrollbar-width:none;-ms-overflow-style:none}.listing-grid::-webkit-scrollbar{display:none;height:0}
+
+/* Chat media, composer actions, voice recorder */
+.chat-compose{display:grid;gap:8px}
+.chat-compose-row{display:flex;align-items:center;gap:8px}
+.compose-icon{width:38px;height:38px;border:0;border-radius:50%;background:var(--secondary);color:var(--primary);display:grid;place-items:center;cursor:pointer;flex:0 0 auto;transition:transform .15s ease}
+.compose-icon svg{width:17px;height:17px}
+.compose-icon:active{transform:scale(.93)}
+.chat-attachments{display:flex;gap:8px;flex-wrap:wrap}
+.pending-chip{position:relative;display:inline-flex;align-items:center;border-radius:12px;overflow:hidden;background:var(--surface-strong);border:1px solid var(--border);padding:4px}
+.pending-chip img,.pending-chip video{width:54px;height:54px;object-fit:cover;border-radius:9px;display:block}
+.pending-chip small{font-size:10px;color:var(--text-secondary);padding:0 6px}
+.pending-chip button{position:absolute;top:2px;right:2px;width:18px;height:18px;border:0;border-radius:50%;background:rgba(13,20,17,.72);color:#fff;font-size:11px;line-height:1;cursor:pointer}
+.bubble p{margin:0}
+.bubble .chat-media{display:block;margin:2px 0 4px;max-width:min(240px,100%);border-radius:14px;overflow:hidden}
+.bubble .chat-media img{display:block;width:100%;max-height:280px;object-fit:cover}
+.bubble .chat-media video{display:block;width:100%;max-height:280px;border-radius:14px;background:#000}
+.voice-note{display:grid;gap:4px}
+.voice-note small{font-size:10px;opacity:.75}
+.voice-note audio{width:min(220px,100%);height:36px}
+.voice-recorder{display:flex;align-items:center;gap:10px;padding:10px 12px;border-top:1px solid var(--border);background:var(--secondary)}
+.rec-dot{width:10px;height:10px;border-radius:50%;background:#c0392b;animation:recPulse 1s infinite}
+@keyframes recPulse{50%{opacity:.35}}
+.rec-hint{font-size:11px;color:var(--text-secondary);flex:1}
+#chatFileInput{display:none}
+.chat-head-user b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46vw}

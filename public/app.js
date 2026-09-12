@@ -562,7 +562,7 @@ function listingCard(listing, landlordMode = false) {
 
 function roommateCard(person) {
   return `<article class="roommate-card glass">
-    <button class="roommate-avatar" data-action="view-roommate" data-id="${person.id}" aria-label="Open profile">${initials(person.name)}</button>
+    <button class="roommate-avatar" data-action="open-user-profile" data-id="${person.id}" aria-label="Open profile">${initials(person.name)}</button>
     <div class="roommate-copy">
       <div><h3>${esc(person.name)}</h3><span>${person.score ? `${person.score}% match` : "Add your preferences for a match score"}</span></div>
       <p>${person.bio ? esc(person.bio) : "This student has not written an about-me yet."}</p>
@@ -857,14 +857,14 @@ function renderMessages() {
       <aside class="conversation-list">
         <h2>Messages</h2>
         <input class="conversation-search" id="conversationSearch" placeholder="Search conversations...">
-        <div id="conversationRows">${state.conversations.map(conversationRow).join("") || `<div class="no-conv-hint">No chats yet — find someone below to start one.</div>`}</div>
+        <div id="conversationRows">${state.conversations.map(conversationRow).join("") || `<div class="no-conv-hint">No conversations yet. Open someone’s profile or use Find people below, then tap Message.</div>`}</div>
         <div class="discover-block">
           <h3>Find people</h3>
           <input class="conversation-search" id="peopleSearch" placeholder="Search people by name, school, or lifestyle..." value="${esc(state.discovery || "")}">
           <div id="peopleRows">${directory.slice(0,12).map(personRow).join("") || `<div class="no-conv-hint">No one matches yet. Try a different name or school.</div>`}</div>
         </div>
       </aside>
-      ${current ? chatMarkup(current) : `<div class="no-chat"><div><div class="empty-icon">${icon("messages")}</div><b>Select a conversation</b><p>Your messages will appear here.</p></div></div>`}
+      ${current ? chatMarkup(current) : `<div class="no-chat"><div><div class="empty-icon">${icon("messages")}</div><b>Select a conversation</b><p>Your messages appear here and stay in your account — including photos, videos, and voice notes.</p></div></div>`}
     </div>`;
   const peopleSearch = $("#peopleSearch");
   if (peopleSearch) peopleSearch.addEventListener("input", event => {
@@ -882,9 +882,24 @@ function renderMessages() {
 
 function chatMarkup(conversation) {
   return `<section class="chat">
-    <header class="chat-head"><button class="icon-more mobile-chat-back" data-action="back-to-conversations">&larr;</button><button class="chat-head-user" data-action="open-user-profile" data-id="${conversation.other?.id || ""}"><span class="avatar">${initials(conversation.other?.name)}</span><span><b>${esc(conversation.other?.name)}</b><small>${conversation.other?.verified?"&#10003; Verified user":"Offkay member"}</small></span></button>${conversation.listingTitle ? `<span class="chat-listing-tag">${esc(conversation.listingTitle)}</span>` : ""}</header>
+    <header class="chat-head"><button class="icon-more mobile-chat-back" data-action="back-to-conversations">&larr;</button><button class="chat-head-user" data-action="open-user-profile" data-id="${conversation.other?.id || ""}"><span class="avatar">${initials(conversation.other?.name)}</span><span><b>${esc(conversation.other?.name || "Offkay user")}</b><small>${conversation.other?.verified?"&#10003; Verified user":"Offkay member"}</small></span></button>${conversation.listingTitle ? `<span class="chat-listing-tag">${esc(conversation.listingTitle)}</span>` : ""}</header>
     <div class="chat-messages" id="chatMessages"><div class="no-chat">Loading messages...</div></div>
-    <form class="chat-compose" id="messageForm"><input name="text" autocomplete="off" placeholder="Write a message..." required><button class="send-button" aria-label="Send">&uarr;</button></form>
+    <form class="chat-compose" id="messageForm">
+      <div class="chat-attachments" id="chatAttachments" hidden></div>
+      <div class="chat-compose-row">
+        <button type="button" class="compose-icon" data-action="pick-attachment" aria-label="Attach a photo or video">${icon("plus")}</button>
+        <button type="button" class="compose-icon" data-action="record-voice" aria-label="Record a voice note">${icon("mic")}</button>
+        <input name="text" autocomplete="off" placeholder="Write a message...">
+        <button class="send-button" type="submit" aria-label="Send">&uarr;</button>
+      </div>
+      <input type="file" id="chatFileInput" accept="image/*,video/mp4,video/webm" multiple hidden>
+    </form>
+    <div class="voice-recorder" id="voiceRecorder" hidden>
+      <span class="rec-dot"></span><span id="recorderTime">0:00</span>
+      <span class="rec-hint">Recording voice note…</span>
+      <button type="button" class="button subtle small" data-action="cancel-recording">Cancel</button>
+      <button type="button" class="button primary small" data-action="stop-recording">Send</button>
+    </div>
   </section>`;
 }
 
@@ -902,6 +917,23 @@ function setChatPolling(conversationId) {
       const incoming = data.messages.map(message=>message.id).join(",");
       state.messages = data.messages;
       if (known !== incoming) renderMessageList(data.messages);
+      // Live updates while the chat is open: preview, list order, badges.
+      const fresh = state.conversations.find(item=>item.id===conversationId);
+      if (fresh && data.conversation) Object.assign(fresh, data.conversation);
+      const rows = $("#conversationRows");
+      if (rows && fresh) {
+        const search = $("#conversationSearch");
+        const q = (search?.value || "").trim().toLowerCase();
+        rows.innerHTML = state.conversations
+          .filter(item => !q || (item.other?.name || "").toLowerCase().includes(q))
+          .map(conversationRow).join("");
+      }
+      request("/api/badges").then(b => {
+        state.unreadMessages = b.messages;
+        state.notificationsUnread = b.notifications;
+        if (b.adminPending !== undefined) state.adminPending = b.adminPending;
+        renderNotificationDot();
+      }).catch(() => {});
     } catch { /* keep polling silently */ }
   }, 4000);
 }
@@ -909,7 +941,7 @@ function setChatPolling(conversationId) {
 function renderMessageList(messages) {
   const box = $("#chatMessages");
   if (!box) return;
-  box.innerHTML = messages.map(message=>`<div class="bubble ${message.senderId===state.user.id?"mine":""}">${esc(message.text)}<time>${time(message.createdAt)}</time></div>`).join("") || `<div class="no-chat">No messages yet.</div>`;
+  box.innerHTML = messages.map(message=>{const mine = message.senderId===state.user.id; const media = (message.attachments||[]).map(a=>attachmentMarkup(a, mine)).join(""); return `<div class="bubble ${mine?"mine":""}">${media}${message.text ? `<p>${esc(message.text)}</p>` : ""}<time>${time(message.createdAt)}</time></div>`;}).join("") || `<div class="no-chat">No messages yet. Say hello.</div>`;
   box.scrollTop = box.scrollHeight;
 }
 
@@ -946,10 +978,13 @@ async function sendMessage(event) {
   event.preventDefault();
   const input = event.currentTarget.elements.text;
   const text = input.value.trim();
-  if (!text || !state.activeConversation) return;
+  const attachments = pendingChatAttachments.slice();
+  if ((!text && !attachments.length) || !state.activeConversation) return;
   input.value = "";
+  pendingChatAttachments = [];
+  renderPendingAttachments();
   try {
-    await request(`/api/conversations/${state.activeConversation}/messages`,{method:"POST",body:JSON.stringify({text})});
+    await request(`/api/conversations/${state.activeConversation}/messages`,{method:"POST",body:JSON.stringify({ text, attachments })});
     const data = await request(`/api/conversations/${state.activeConversation}/messages`);
     state.messages = data.messages;
     renderMessageList(data.messages);
@@ -957,7 +992,153 @@ async function sendMessage(event) {
     renderNotificationDot();
     const rows = $("#conversationRows");
     if (rows) rows.innerHTML = state.conversations.map(conversationRow).join("");
-  } catch (error) { input.value = text; toast(error.message); }
+  } catch (error) {
+    input.value = text;
+    pendingChatAttachments = attachments;
+    renderPendingAttachments();
+    toast(error.message);
+  }
+}
+
+/* ---- Chat media + voice notes ------------------------------------------- */
+let pendingChatAttachments = [];
+const CHAT_MEDIA_LIMIT = 650 * 1000; // bytes; leaves headroom in the 2 MB JSON body
+
+function attachmentMarkup(attachment) {
+  if (!attachment?.dataUrl) return "";
+  const mime = String(attachment.mime || "");
+  if (mime.startsWith("image/")) return `<a class="chat-media" href="${attachment.dataUrl}" target="_blank" rel="noreferrer"><img src="${attachment.dataUrl}" alt="${esc(attachment.name || "Photo")}" loading="lazy"></a>`;
+  if (mime.startsWith("video/")) return `<video class="chat-media" src="${attachment.dataUrl}" controls preload="metadata" playsinline></video>`;
+  if (mime.startsWith("audio/")) return `<span class="voice-note"><small>Voice note${attachment.meta && /\d/.test(attachment.meta) ? " \u00b7 " + esc(attachment.meta) : ""}</small><audio src="${attachment.dataUrl}" controls preload="metadata"></audio></span>`;
+  return "";
+}
+
+function renderPendingAttachments() {
+  const wrap = $("#chatAttachments");
+  if (!wrap) return;
+  wrap.hidden = !pendingChatAttachments.length;
+  wrap.innerHTML = pendingChatAttachments.map((item, index) => {
+    const remove = `<button type="button" data-action="remove-attachment" data-id="${index}" aria-label="Remove attachment">&times;</button>`;
+    if (item.kind === "audio") return `<span class="pending-chip"><small>Voice note${item.durationLabel ? " \u00b7 " + esc(item.durationLabel) : ""}</small>${remove}</span>`;
+    if (item.kind === "video") return `<span class="pending-chip"><video src="${item.dataUrl}" muted></video>${remove}</span>`;
+    return `<span class="pending-chip"><img src="${item.dataUrl}" alt="">${remove}</span>`;
+  }).join("");
+}
+
+function pickAttachment() {
+  const input = $("#chatFileInput");
+  if (!input) return;
+  input.value = "";
+  input.click();
+}
+
+function probeMediaDuration(file, kind) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const el = document.createElement(kind === "video" ? "video" : "audio");
+    el.preload = "metadata";
+    el.onloadedmetadata = () => { const d = el.duration; URL.revokeObjectURL(url); resolve(Number.isFinite(d) ? d : 0); };
+    el.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Cannot read media")); };
+    el.src = url;
+  });
+}
+
+async function handlePickedFiles(fileList) {
+  for (const file of [...fileList]) {
+    const isImage = file.type.startsWith("image/");
+    const isVideo = file.type.startsWith("video/");
+    if (!isImage && !isVideo) { toast("Only photos and short videos can be attached"); continue; }
+    if (file.size > CHAT_MEDIA_LIMIT) { toast(isVideo ? "Keep videos short — under about 650 KB (roughly 10 seconds)" : "Choose a photo under 650 KB"); continue; }
+    if (isVideo) {
+      try {
+        const duration = await probeMediaDuration(file, "video");
+        if (duration > 15) { toast("Videos must be 15 seconds or shorter"); continue; }
+      } catch { /* duration unknown — size cap still applies */ }
+    }
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error("We could not read that file"));
+        reader.readAsDataURL(file);
+      });
+      pendingChatAttachments.push({ kind: isVideo ? "video" : "image", dataUrl, name: file.name || "attachment" });
+      renderPendingAttachments();
+    } catch (error) { toast(error.message); }
+  }
+}
+
+let mediaRecorder = null;
+let mediaChunks = [];
+let mediaStream = null;
+let recorderTimer = null;
+let recorderSeconds = 0;
+
+function recordingSupported() {
+  return Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia);
+}
+
+async function startVoiceRecording() {
+  if (!recordingSupported()) { toast("Voice notes need a browser with microphone recording support"); return; }
+  if (mediaRecorder && mediaRecorder.state === "recording") return;
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    toast(error?.name === "NotAllowedError" ? "Microphone permission was denied. Enable it in your browser settings to send voice notes." : "Could not start recording on this device.");
+    return;
+  }
+  try { mediaRecorder = new MediaRecorder(mediaStream); }
+  catch { toast("Recording is not supported in this browser"); cleanupRecording(); return; }
+  mediaChunks = [];
+  mediaRecorder.ondataavailable = event => { if (event.data && event.data.size) mediaChunks.push(event.data); };
+  mediaRecorder.onstop = onRecordingStopped;
+  mediaRecorder.start();
+  recorderSeconds = 0;
+  const recorder = $("#voiceRecorder");
+  if (recorder) { recorder.hidden = false; const label = $("#recorderTime"); if (label) label.textContent = "0:00"; }
+  recorderTimer = setInterval(() => {
+    recorderSeconds += 1;
+    const label = $("#recorderTime");
+    if (label) label.textContent = `${Math.floor(recorderSeconds / 60)}:${String(recorderSeconds % 60).padStart(2, "0")}`;
+    if (recorderSeconds >= 60) stopVoiceRecording(true);
+  }, 1000);
+}
+
+function cleanupRecording() {
+  clearInterval(recorderTimer);
+  recorderTimer = null;
+  if (mediaStream) { mediaStream.getTracks().forEach(track => track.stop()); mediaStream = null; }
+}
+
+function cancelVoiceRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") { mediaRecorder.onstop = null; mediaRecorder.stop(); }
+  cleanupRecording();
+  const recorder = $("#voiceRecorder");
+  if (recorder) recorder.hidden = true;
+  mediaChunks = [];
+}
+
+function stopVoiceRecording(auto) {
+  if (!mediaRecorder || mediaRecorder.state === "inactive") { if (auto) cancelVoiceRecording(); return; }
+  mediaRecorder.stop();
+}
+
+function onRecordingStopped() {
+  cleanupRecording();
+  const recorder = $("#voiceRecorder");
+  if (recorder) recorder.hidden = true;
+  const type = (mediaRecorder && mediaRecorder.mimeType) || "audio/webm";
+  const blob = new Blob(mediaChunks, { type });
+  mediaChunks = [];
+  if (blob.size < 1200) { toast("That recording was too short to send"); return; }
+  if (blob.size > CHAT_MEDIA_LIMIT) { toast("Voice note too long — keep it under about a minute"); return; }
+  const seconds = recorderSeconds;
+  const reader = new FileReader();
+  reader.onload = () => {
+    pendingChatAttachments.push({ kind: "audio", dataUrl: String(reader.result), name: "voice-note", durationLabel: `${seconds}s` });
+    renderPendingAttachments();
+  };
+  reader.readAsDataURL(blob);
 }
 
 function renderProfile() {
@@ -1518,9 +1699,14 @@ function openMap(id) {
 async function startChat(id) {
   try {
     const data = await request("/api/conversations/start",{method:"POST",body:JSON.stringify({userId:id})});
-    await refreshData();
+    // Create/find the conversation first, then close the profile popup
+    // BEFORE navigating so the chat is never left sitting under a modal.
+    closeModal();
+    state.openProfileId = null;
+    await refreshData(false);
     state.activeConversation = data.conversationId;
     switchTab("messages");
+    renderMessages();
     toast("Conversation started");
   } catch(error) { toast(error.message); }
 }
@@ -1922,6 +2108,11 @@ function bindEvents() {
     if (action==="set-theme-settings") { applyTheme(actionNode.dataset.theme); renderSettings(); }
     if (action==="goto-people") { closeModal(); state.exploreMode = "people"; switchTab("explore"); }
     if (action==="reset-people-filters") { state.filters.people = { query:"", university:"", connected:false }; renderExplore(); }
+    if (action==="pick-attachment") pickAttachment();
+    if (action==="remove-attachment") { pendingChatAttachments.splice(Number(id) || 0, 1); renderPendingAttachments(); }
+    if (action==="record-voice") startVoiceRecording();
+    if (action==="cancel-recording") cancelVoiceRecording();
+    if (action==="stop-recording") stopVoiceRecording(false);
   });
 
   $("#notificationButton").addEventListener("click", () => { if (state.user) openNotifications(); });
@@ -1930,6 +2121,7 @@ function bindEvents() {
   $("#signupForm").addEventListener("submit", signup);
   $("#forgotForm").addEventListener("submit", forgotPassword);
   $("#resetForm").addEventListener("submit", submitReset);
+  document.addEventListener("change", event => { if (event.target.id === "chatFileInput" && event.target.files?.length) handlePickedFiles(event.target.files); });
   $("#logoutButton").addEventListener("click", confirmLogout);
   $("#globalSearch").addEventListener("keydown", event => {
     if (event.key === "Enter") {

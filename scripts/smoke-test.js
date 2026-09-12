@@ -195,6 +195,17 @@ async function run() {
     const convo = landlordBootstrap.payload.conversations.find(c => c.id === convoId);
     check("conversation includes listing title and unread count", convo && convo.listingTitle === "Test Lodge" && typeof convo.unread === "number");
 
+    const mediaImage = "data:image/png;base64," + Buffer.from("png-image-bytes-for-smoke-test").toString("base64");
+    const mediaSend = await call(tenant, "POST", `/api/conversations/${convoId}/messages`, { text:"", attachments:[{ dataUrl: mediaImage, name:"room.png" }] });
+    check("image attachment message is accepted (201)", mediaSend.status === 201 && mediaSend.payload.message.attachments?.[0]?.mime === "image/png");
+    const mediaRead = await call(landlord, "GET", `/api/conversations/${convoId}/messages`);
+    check("attachment persists and is readable by recipient", mediaRead.status === 200 && mediaRead.payload.messages.some(m => m.attachments?.[0]?.dataUrl === mediaImage));
+    const badType = await call(tenant, "POST", `/api/conversations/${convoId}/messages`, { attachments:[{ dataUrl:"data:application/pdf;base64," + Buffer.from("x").toString("base64") }] });
+    check("disallowed attachment type is rejected (415)", badType.status === 415);
+    const tooBig = await call(tenant, "POST", `/api/conversations/${convoId}/messages`, { attachments:[{ dataUrl:"data:image/png;base64," + Buffer.alloc(950000, 7).toString("base64") }] });
+    check("oversized attachment is rejected (413)", tooBig.status === 413);
+    const voiceSend = await call(tenant, "POST", `/api/conversations/${convoId}/messages`, { text:"", attachments:[{ dataUrl:"data:audio/webm;base64," + Buffer.from("voice-note-bytes").toString("base64"), meta:"audio" }] });
+    check("voice-note attachment is accepted (201)", voiceSend.status === 201 && voiceSend.payload.message.attachments?.[0]?.mime === "audio/webm");
     const outsider = jar();
     await call(outsider, "POST", "/api/auth/signup", { name:"Out Sider", email:"outsider@example.com", password:"password123" });
     const outsiderRead = await call(outsider, "GET", `/api/conversations/${convoId}/messages`);
