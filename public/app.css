@@ -669,3 +669,38 @@ select.filter-pill{padding-right:32px;background-image:url("data:image/svg+xml;c
   .chat-head{padding:12px 14px;min-height:60px}
   .chat-messages{padding:16px 13px}
 }
+
+
+/* ==========================================================================
+   DETAIL VIEWS - listing gallery/facts/host + full public profile.
+   ========================================================================== */
+.detail-gallery{display:grid;gap:8px}
+/* main image keeps .detail-image min-heights (its img is absolutely
+   positioned, so the container must hold height) */
+.detail-thumbs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.detail-thumb{position:relative;aspect-ratio:4/3;border:2px solid transparent;border-radius:12px;overflow:hidden;padding:0;background:var(--secondary);cursor:pointer}
+.detail-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.detail-thumb.active{border-color:var(--primary)}
+.detail-facts{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:16px 0 4px}
+.detail-facts .fact{display:grid;gap:2px;justify-items:center;text-align:center;padding:10px 4px;border:1px solid var(--border);border-radius:14px;background:var(--secondary);min-width:0}
+.detail-facts .fact b{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.detail-facts .fact span{font-size:9.5px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.detail-host{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:16px;padding:12px;border:1px solid var(--border);border-radius:16px;background:var(--secondary)}
+.host-chip{display:flex;align-items:center;gap:10px;border:0;background:transparent;padding:0;text-align:left;min-width:0;cursor:pointer}
+.host-chip .avatar{flex:0 0 auto}
+.host-chip span{display:grid;gap:2px;min-width:0}
+.host-chip b{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.host-chip small{color:var(--text-secondary);font-size:11px}
+.booking-steps{display:grid;gap:10px;margin-bottom:18px}
+.booking-steps>div{display:grid;grid-template-columns:34px 1fr;gap:11px;align-items:start;padding:12px;border:1px solid var(--border);border-radius:14px;background:var(--secondary)}
+.booking-steps b{width:34px;height:34px;display:grid;place-items:center;border-radius:50%;background:var(--primary);color:var(--primary-ink);font-size:14px}
+.booking-steps span{color:var(--text-secondary);font-size:13px;line-height:1.5}
+.profile-facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0 4px}
+.profile-facts .fact{display:grid;gap:2px;justify-items:center;text-align:center;padding:11px 4px;border:1px solid var(--border);border-radius:14px;background:var(--secondary);min-width:0}
+.profile-facts .fact b{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.profile-facts .fact span{font-size:9.5px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+@media(max-width:560px){
+  .detail-facts{grid-template-columns:repeat(3,1fr)}
+  .detail-facts .fact:nth-child(n+4){display:none}
+  .detail-thumbs{gap:6px}
+}

@@ -927,6 +927,11 @@ async function openUserProfile(id) {
             <small>Member since ${person.memberSince ? new Date(person.memberSince).toLocaleDateString("en-NG",{month:"long",year:"numeric"}) : "recently"}</small>
           </div>
         </div>
+        ${person.score || person.budget || person.hosting ? `<div class="profile-facts">
+          ${person.score ? `<div class="fact"><b>${person.score}%</b><span>match</span></div>` : ""}
+          ${person.budget ? `<div class="fact"><b>${money(person.budget)}</b><span>budget ceiling</span></div>` : ""}
+          <div class="fact"><b>${person.hosting ? "Host" : "Student"}</b><span>on Offkay as</span></div>
+        </div>` : ""}
         <h3>About</h3>
         <p>${esc(person.bio || "This member has not written an about section yet.")}</p>
         ${person.habits?.length ? `<h3>Lifestyle</h3><div class="amenities">${person.habits.map(habit=>`<span class="amenity">${esc(habit)}</span>`).join("")}</div>` : ""}
@@ -1845,14 +1850,26 @@ function emptyState(title, description, action = "") {
 function openListing(id) {
   const item = state.listings.find(listing=>listing.id===id) || state.ownListings.find(listing=>listing.id===id);
   if (!item) return toast("Open a property from Explore first");
-  const photo = item.photos?.[0];
+  const photos = (item.photos || []).slice(0, 4);
+  const mainPhoto = photos[0];
   const mine = state.user && item.ownerId === state.user.id;
+  const thumbs = photos.length > 1 ? `<div class="detail-thumbs">${photos.map((src,index)=>`<button type="button" class="detail-thumb${index===0?" active":""}" data-action="swap-photo" data-src="${src}" aria-label="Photo ${index+1}"><img src="${src}" alt="" loading="lazy"></button>`).join("")}</div>` : "";
   modal(`
     <div class="modal-head"><div><span class="eyebrow">${item.verified?"&#10003; Verified property":"&#9676; Verification under review"}</span></div><button class="close-button">&times;</button></div>
     <div class="listing-detail">
-      <div class="detail-image">${photo ? `<img src="${photo}" alt="${esc(item.title)}">` : `<div class="building"></div>`}<span class="map-pin">⌖ ${esc(item.area)}</span></div>
+      <div class="detail-gallery">
+        <div class="detail-image detail-gallery-main">${mainPhoto ? `<img src="${mainPhoto}" alt="${esc(item.title)}" draggable="false">` : `<div class="building"></div>`}<span class="map-pin">⌖ ${esc(item.area)}</span>${item.full?`<span class="verify-tag">Fully booked</span>`:""}</div>
+        ${thumbs}
+      </div>
       <div class="detail-copy">
         <span class="eyebrow">${esc(item.type)}</span><h2>${esc(item.title)}</h2><span>&#8982; ${esc(item.area)} &middot; ${esc(item.university)}</span>
+        <div class="detail-facts">
+          <div class="fact"><b>${item.bedrooms}</b><span>bedroom${item.bedrooms===1?"":"s"}</span></div>
+          <div class="fact"><b>${item.bathrooms}</b><span>bathroom${item.bathrooms===1?"":"s"}</span></div>
+          <div class="fact"><b>${esc(item.type)}</b><span>layout</span></div>
+          <div class="fact"><b>${item.verified?"Yes":"Pending"}</b><span>verified</span></div>
+          <div class="fact"><b>${item.occupied||0}/${item.capacity||item.bedrooms||1}</b><span>rooms taken</span></div>
+        </div>
         <div class="detail-price">${money(item.price)} <small>/ academic year</small></div>
         ${(!item.proximity?.distanceText || item.proximity.distanceText === "0 m") ? `<div class="proximity-strip proximity-unknown">
           <span class="proximity-strong">Distance to campus unknown</span>
@@ -1880,6 +1897,13 @@ function openListing(id) {
           ${item.full ? `<button class="button light" disabled>Fully booked</button>` : `<button class="button primary" data-action="start-booking" data-id="${item.id}">Book &amp; split rent</button>`}
         </div>
         ${item.full ? `<div class="payment-note">Every room here is already booked by a confirmed group. Browse the Explore tab for similar available homes.</div>` : ""}
+        <div class="detail-host">
+          <button type="button" class="host-chip" data-action="open-user-profile" data-id="${item.owner?.id || ""}" aria-label="Open host profile">
+            ${avatarHtml(item.owner?.name || "Host", item.ownerAvatarUrl)}
+            <span><b>${esc(item.owner?.name || "Offkay host")}</b><small>${item.owner?.verified ? "&#10003; Verified host" : "Offkay host"}</small></span>
+          </button>
+          <button type="button" class="link-button" data-action="booking-info">How booking works</button>
+        </div>
         <button class="report-link" data-action="open-report" data-id="${item.id}">Report a concern</button>`}
       </div>
     </div>`,true);
@@ -2309,6 +2333,23 @@ function bindEvents() {
     if (action==="toggle-roommate-verified") {state.filters.roommates.verified=!state.filters.roommates.verified;renderExplore();}
     if (action==="toggle-people-connected") {state.filters.people.connected=!state.filters.people.connected;renderExplore();}
     if (action==="open-advanced-filters") {openAdvancedFilters();}
+    if (action==="swap-photo") {
+      const main = document.querySelector(".detail-gallery-main img");
+      if (main && actionNode.dataset.src) {
+        main.src = actionNode.dataset.src;
+        document.querySelectorAll(".detail-thumb").forEach(node=>node.classList.toggle("active",node===actionNode));
+      }
+    }
+    if (action==="booking-info") {
+      modal(`
+        <div class="modal-head"><div><span class="eyebrow">Booking</span><h2>How booking works</h2><p>Split rent with your group, confirmed through Offkay.</p></div><button class="close-button">&times;</button></div>
+        <div class="booking-steps">
+          <div><b>1</b><span>Request an inspection or message the host with any questions.</span></div>
+          <div><b>2</b><span>Book the home and split the annual rent with your group members.</span></div>
+          <div><b>3</b><span>The host confirms. Offkay verifies the payment and your rooms are locked in.</span></div>
+        </div>
+        <button class="button primary wide" data-action="close-modal">Got it</button>`);
+    }
     if (action==="open-image-viewer") {
       const img = actionNode.querySelector("img");
       openImageViewer(img ? img.getAttribute("src") : "", img ? img.alt : "");

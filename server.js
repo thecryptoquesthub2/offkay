@@ -865,7 +865,7 @@ function listingPayload(listing, db, user) {
     ...publicListing,
     ...(isOwnerView ? { latitude, longitude } : {}),
     ...approximateCoords(listing),
-    owner: owner ? { id:owner.id, name:owner.name, verified:owner.verified } : null,
+    owner: owner ? { id:owner.id, name:owner.name, verified:owner.verified, avatarUrl: owner.avatar || owner.googlePicture || null } : null,
     hostView: Boolean(owner && (owner.verified === true || owner.role === "landlord")),
     saved: Boolean(user && db.saved.some(item => item.userId === user.id && item.listingId === listing.id)),
     proximity: proximityPayload(listing),
