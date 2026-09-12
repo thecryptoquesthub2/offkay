@@ -228,14 +228,23 @@ function populateUniversities() {
   if (select) select.innerHTML = list.map(name => `<option>${esc(name)}</option>`).join("");
 }
 
+function removeBootSplash() {
+  const splash = $("#bootSplash");
+  if (splash) splash.remove();
+}
+
 function showAuth() {
+  removeBootSplash();
   $("#authScreen").classList.remove("hidden");
   $("#app").classList.add("hidden");
+  $("#app").hidden = true;
 }
 
 function enterApp() {
+  removeBootSplash();
   $("#authScreen").classList.add("hidden");
   $("#app").classList.remove("hidden");
+  $("#app").hidden = false;
   $("#topAvatar").textContent = initials(state.user.name);
   $("#topName").textContent = firstName(state.user.name);
   $("#topRole").textContent = inHostView() ? "Host" : "Guest";
@@ -349,7 +358,18 @@ function renderAll() {
   renderExplore();
   renderMessages();
   renderProfile();
+  renderAdminVisibility();
   switchTab(state.activeTab, false);
+}
+
+/* Admin tab is only rendered when the SERVER says this account is a core
+   admin (state.user.isCoreAdmin comes from the bootstrap payload). This is
+   UI convenience, not authorization — every admin API call is re-verified
+   server-side. */
+function renderAdminVisibility() {
+  const isAdmin = Boolean(state.user && state.user.isCoreAdmin);
+  $$(".admin-only").forEach(node => node.classList.toggle("hidden", !isAdmin));
+  if (!isAdmin && state.activeTab === "admin") state.activeTab = "home";
 }
 
 function switchTab(tab, render = true) {
@@ -362,6 +382,7 @@ function switchTab(tab, render = true) {
     if (tab === "explore") renderExplore();
     if (tab === "profile") renderProfile();
     if (tab === "home") renderHome();
+    if (tab === "admin") renderAdmin();
   }
   window.scrollTo({top:0,behavior:"smooth"});
 }
@@ -810,6 +831,7 @@ function renderProfile() {
           ${verificationPanel(verificationState(), state.verification)}
           <button class="settings-row" data-action="open-verification">${icon("verified")}<span><b>Verification</b><small>${esc(verificationStatusLabel())}</small></span><em>&rarr;</em></button>
           <button class="settings-row" data-action="open-settings">${icon("settings")}<span><b>Settings</b><small>Account, notifications, personalization, privacy</small></span><em>&rarr;</em></button>
+          ${state.user.isCoreAdmin ? `<button class="settings-row" data-action="goto-admin">${icon("verified")}<span><b>Admin dashboard</b><small>Verification queue, review, audit trail</small></span><em>&rarr;</em></button>` : ""}
         </div>
       </aside>
       <form class="profile-form glass form-stack" id="profileForm">
@@ -1060,6 +1082,93 @@ function confirmDeleteAccount() {
       toast("Account deleted");
     } catch(error) { toast(error.message); setLoading(button,false); }
   };
+}
+
+/* ============ Core Administrator dashboard ============ */
+async function renderAdmin() {
+  const host = $("#tab-admin");
+  if (!host) return;
+  host.innerHTML = `<div class="page-head"><div><h1>Admin dashboard</h1><p>Verification queue, review tools, and the full audit trail.</p></div></div><div class="no-chat"><div><div class="empty-icon">${icon("verified")}</div><b>Loading admin data…</b><p>Fetching the verification queue.</p></div></div>`;
+  let overview, history;
+  try {
+    [overview, history] = await Promise.all([
+      request("/api/admin/overview"),
+      request("/api/admin/verification-history")
+    ]);
+  } catch (error) {
+    host.innerHTML = `<div class="page-head"><div><h1>Admin dashboard</h1></div></div>${emptyState("Admin access required", error.message)}`;
+    return;
+  }
+  const pending = overview.verifications || [];
+  const events = history.events || [];
+  host.innerHTML = `
+    <div class="page-head"><div><h1>Admin dashboard</h1><p>Core administrator tools — every action here is recorded in the audit trail with your account.</p></div></div>
+    <div class="metrics">
+      <div class="metric"><span class="metric-icon">&#9873;</span><div><small>Pending verifications</small><strong>${pending.length}</strong></div></div>
+      <div class="metric"><span class="metric-icon">&#10003;</span><div><small>Reviews recorded</small><strong>${events.length}</strong></div></div>
+      <div class="metric"><span class="metric-icon">&#9825;</span><div><small>Total users</small><strong>${overview.stats?.users ?? "—"}</strong></div></div>
+    </div>
+    <div class="section-head"><h2>Verification queue</h2><p>Open a submission to view documents and approve or reject.</p></div>
+    ${pending.length ? `<div class="admin-queue">${pending.map(item => `
+      <div class="admin-row">
+        <button class="person-main" data-action="admin-review" data-id="${item.id}">
+          <span class="avatar">${initials(item.applicantName)}</span>
+          <span class="conversation-text"><b>${esc(item.applicantName)}</b><span>${esc(item.applicantEmail)} · ${esc(item.applicantUniversity || "")}</span></span>
+        </button>
+        <small class="admin-date">${new Date(item.createdAt).toLocaleDateString()}</small>
+        <span class="status-tag pending">PENDING</span>
+        <button class="button primary small" data-action="admin-review" data-id="${item.id}">Review</button>
+      </div>`).join("")}</div>` : emptyState("Queue is clear", "No verification submissions are waiting for review.")}
+    <div class="section-head"><h2>Verification history</h2><p>Every approval and rejection, with the administrator who performed it.</p></div>
+    ${events.length ? `<div class="admin-history">${events.map(event => `
+      <div class="admin-row ${event.decision === "rejected" ? "rejected" : ""}">
+        <span class="conversation-text"><b>${esc(event.userName)}</b><span>${esc(event.userEmail)}</span></span>
+        <span class="status-tag ${event.decision === "approved" ? "ok" : "rejected"}">${event.decision === "approved" ? "VERIFIED" : "REJECTED"}</span>
+        <span class="conversation-text admin-by"><span>by ${esc(event.reviewedByName)}</span><span>${new Date(event.reviewedAt).toLocaleString()}</span></span>
+        ${event.reason ? `<span class="verify-reason">Reason: ${esc(event.reason)}</span>` : ""}
+      </div>`).join("")}</div>` : emptyState("No reviews yet", "Approvals and rejections will appear here.")}`;
+}
+
+async function adminReviewSheet(verificationId) {
+  let overview;
+  try { overview = await request("/api/admin/overview"); }
+  catch (error) { return toast(error.message); }
+  const item = (overview.verifications || []).find(entry => entry.id === verificationId);
+  if (!item) return toast("Submission not found (it may have been reviewed already)");
+  modal(`
+    <div class="modal-head"><div><span class="eyebrow">Verification review</span><h2>${esc(item.applicantName)}</h2><p>${esc(item.applicantEmail)} · ${esc(item.applicantRole)} · ${esc(item.applicantUniversity || "")}</p></div><button class="close-button">&times;</button></div>
+    <div class="verify-panel">
+      <div class="cost-row"><span>ID type</span><b>${esc(item.idType || "Student ID")}</b></div>
+      <div class="cost-row"><span>NIN (masked)</span><b>${esc(item.ninMasked || "—")}</b></div>
+      <div class="cost-row"><span>Submitted</span><b>${new Date(item.createdAt).toLocaleString()}</b></div>
+      <div class="admin-docs">
+        ${item.hasIdCard ? `<a class="button subtle" href="/api/admin/verification/${item.id}/document/idCard" target="_blank" rel="noopener">View ID card</a>` : `<span class="verify-reason">No ID card image</span>`}
+        ${item.hasSupportDocument ? `<a class="button subtle" href="/api/admin/verification/${item.id}/document/support" target="_blank" rel="noopener">View support document</a>` : `<span class="verify-reason">No support document</span>`}
+      </div>
+      <label style="display:grid;gap:7px"><span class="settings-group-label">Rejection reason (required when rejecting)</span>
+        <input id="adminRejectReason" placeholder="e.g. Document is not readable"></label>
+      <div class="modal-actions">
+        <button class="button subtle" data-action="close-modal">Cancel</button>
+        <button class="button danger" id="adminReject">Reject</button>
+        <button class="button primary" id="adminApprove">Approve verification</button>
+      </div>
+    </div>`, true);
+  $("#adminApprove").onclick = () => adminSubmitReview(verificationId, "approve", "");
+  $("#adminReject").onclick = () => {
+    const reason = ($("#adminRejectReason")?.value || "").trim();
+    if (!reason) return toast("Enter a rejection reason first");
+    adminSubmitReview(verificationId, "reject", reason);
+  };
+}
+
+async function adminSubmitReview(verificationId, decision, reason) {
+  try {
+    await request(`/api/admin/verification/${verificationId}/review`,{method:"POST",body:JSON.stringify({decision,reason})});
+    closeModal();
+    toast(decision === "approve" ? "Verification approved" : "Verification rejected");
+    await refreshData(false);
+    renderAdmin();
+  } catch(error) { toast(error.message); }
 }
 
 function verificationSheet() {
@@ -1547,6 +1656,8 @@ function bindEvents() {
     if (action==="finish-inspection") {closeModal();switchTab("messages");toast("Inspection request saved");}
     if (action==="open-settings") settingsSheet();
     if (action==="open-verification") verificationSheet();
+    if (action==="admin-review") adminReviewSheet(id);
+    if (action==="goto-admin") switchTab("admin");
     if (action==="activate-host") activateHost();
     if (action==="confirm-logout") confirmLogout();
     if (action==="do-logout") doLogout();

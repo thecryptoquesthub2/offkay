@@ -13,7 +13,11 @@
 <body>
   <div class="ambient" aria-hidden="true"><i></i><i></i><i></i></div>
 
-  <section id="authScreen" class="auth-screen">
+  <!-- Boot splash: shown while the session is being restored, so a refresh
+       never flashes the sign-in page for signed-in users. -->
+  <div id="bootSplash" class="boot-splash" aria-hidden="true"><span class="boot-mark">offkay</span></div>
+
+  <section id="authScreen" class="auth-screen hidden">
     <div class="auth-brand">
       <a class="brand" href="#"><span class="brand-mark">&#8962;</span><span>Offkay</span></a>
       <div class="auth-story">
@@ -69,7 +73,7 @@
     </div>
   </section>
 
-  <div id="app" class="app hidden">
+  <div id="app" class="app hidden" hidden>
     <header class="topbar glass">
       <a class="brand" href="#" data-tab="home"><img class="brand-logo" src="/offkay-mark.png" alt=""><span>offkay</span></a>
       <div class="top-search">
@@ -89,6 +93,7 @@
         <button class="nav-item" data-tab="explore"><svg><use href="/offkay-icons.svg#pin"></use></svg><b>Explore</b></button>
         <button class="nav-item" data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b><i class="count-badge msg-badge" hidden></i></button>
         <button class="nav-item" data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Profile</b></button>
+        <button class="nav-item admin-only hidden"><svg><use href="/offkay-icons.svg#verified"></use></svg><b>Admin</b></button>
       </nav>
       <div class="sidebar-card" id="sidebarCard">
         <span>Roommate Match</span>
@@ -103,6 +108,7 @@
       <section id="tab-explore" class="tab"></section>
       <section id="tab-messages" class="tab"></section>
       <section id="tab-profile" class="tab"></section>
+      <section id="tab-admin" class="tab"></section>
     </main>
 
     <nav class="bottom-nav glass" aria-label="Mobile navigation">
@@ -110,11 +116,12 @@
       <button data-tab="explore"><svg><use href="/offkay-icons.svg#pin"></use></svg><b>Explore</b></button>
       <button data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b><i class="count-badge msg-badge" hidden></i></button>
       <button data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Profile</b><i class="count-badge notif-badge" hidden></i></button>
+      <button data-tab="admin" class="admin-only hidden"><svg><use href="/offkay-icons.svg#verified"></use></svg><b>Admin</b></button>
     </nav>
   </div>
 
   <div id="modalRoot" class="modal-root" aria-live="polite"></div>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=5"></script>
+  <script src="/app.js?v=6"></script>
 </body>
 </html>
