@@ -1057,8 +1057,9 @@ function setChatPolling(conversationId) {
 function renderMessageList(messages) {
   const box = $("#chatMessages");
   if (!box) return;
+  const stickToBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   box.innerHTML = messages.map(message=>{const mine = message.senderId===state.user.id; const media = (message.attachments||[]).map(a=>attachmentMarkup(a, mine)).join(""); return `<div class="bubble ${mine?"mine":""}">${media}${message.text ? `<p>${esc(message.text)}</p>` : ""}<time>${time(message.createdAt)}</time></div>`;}).join("") || `<div class="no-chat">No messages yet. Say hello.</div>`;
-  box.scrollTop = box.scrollHeight;
+  box.scrollTop = stickToBottom ? box.scrollHeight : Math.min(box.scrollTop, box.scrollHeight);
 }
 
 async function loadMessages(conversationId) {
@@ -1129,10 +1130,26 @@ const CHAT_MEDIA_LIMIT = 650 * 1000; // bytes; leaves headroom in the 2 MB JSON 
 function attachmentMarkup(attachment) {
   if (!attachment?.dataUrl) return "";
   const mime = String(attachment.mime || "");
-  if (mime.startsWith("image/")) return `<a class="chat-media" href="${attachment.dataUrl}" target="_blank" rel="noreferrer"><img src="${attachment.dataUrl}" alt="${esc(attachment.name || "Photo")}" loading="lazy"></a>`;
+  if (mime.startsWith("image/")) return `<button type="button" class="chat-media chat-image" data-action="open-image-viewer" aria-label="View photo full size"><img src="${attachment.dataUrl}" alt="${esc(attachment.name || "Photo")}" loading="lazy"></button>`;
   if (mime.startsWith("video/")) return `<video class="chat-media" src="${attachment.dataUrl}" controls preload="metadata" playsinline></video>`;
   if (mime.startsWith("audio/")) return `<span class="voice-note"><small>Voice note${attachment.meta && /\d/.test(attachment.meta) ? " \u00b7 " + esc(attachment.meta) : ""}</small><audio src="${attachment.dataUrl}" controls preload="metadata"></audio></span>`;
   return "";
+}
+
+/* In-app image viewer: opens the photo over the conversation; nothing navigates
+   away. Click anywhere (or Esc / the X) closes it. */
+function openImageViewer(dataUrl, alt) {
+  const root = $("#modalRoot");
+  root.innerHTML = `<div class="image-viewer" role="dialog" aria-modal="true" aria-label="Photo preview">
+    <button type="button" class="image-viewer-close" data-action="close-image-viewer" aria-label="Close preview">&times;</button>
+    <img src="${dataUrl}" alt="${esc(alt || "Photo")}">
+  </div>`;
+  root.classList.add("open","viewer");
+}
+function closeImageViewer() {
+  const root = $("#modalRoot");
+  root.classList.remove("open","viewer");
+  root.innerHTML = "";
 }
 
 function renderPendingAttachments() {
@@ -2282,6 +2299,11 @@ function bindEvents() {
     if (action==="toggle-roommate-verified") {state.filters.roommates.verified=!state.filters.roommates.verified;renderExplore();}
     if (action==="toggle-people-connected") {state.filters.people.connected=!state.filters.people.connected;renderExplore();}
     if (action==="open-advanced-filters") {openAdvancedFilters();}
+    if (action==="open-image-viewer") {
+      const img = actionNode.querySelector("img");
+      openImageViewer(img ? img.getAttribute("src") : "", img ? img.alt : "");
+    }
+    if (action==="close-image-viewer") {closeImageViewer();}
     if (action==="reset-roommate-filters") {state.filters.roommates={query:"",university:"",maxBudget:"",habit:"",verified:false};renderExplore();}
     if (action==="open-conversation") {state.activeConversation=id;renderMessages();}
     if (action==="back-to-conversations") {state.activeConversation=null;setChatPolling(null);renderMessages();}
@@ -2314,7 +2336,10 @@ function bindEvents() {
   });
 
   $("#notificationButton").addEventListener("click", () => { if (state.user) openNotifications(); });
-  $("#modalRoot").addEventListener("click", event => { if(event.target===$("#modalRoot")) closeModal(); });
+  $("#modalRoot").addEventListener("click", event => {
+    if (event.target===$("#modalRoot")) { if($("#modalRoot").classList.contains("viewer")) closeImageViewer(); else closeModal(); }
+    else if (event.target.classList?.contains("image-viewer")) closeImageViewer();
+  });
   $("#loginForm").addEventListener("submit", login);
   $("#signupForm").addEventListener("submit", signup);
   $("#forgotForm").addEventListener("submit", forgotPassword);
@@ -2328,7 +2353,10 @@ function bindEvents() {
   });
   document.addEventListener("keydown",event=>{
     if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="k"){event.preventDefault();$("#globalSearch").focus();}
-    if(event.key==="Escape")closeModal();
+    if(event.key==="Escape"){
+      if($("#modalRoot").classList.contains("viewer")){closeImageViewer();return;}
+      closeModal();
+    }
   });
   document.addEventListener("input",event=>{
     const filter = event.target.dataset.filter;
