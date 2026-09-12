@@ -529,7 +529,7 @@ function switchTab(tab, render = true) {
 
 function proximityChip(listing) {
   const p = listing.proximity;
-  if (!p || !p.distanceText) return "";
+  if (!p || !p.distanceText || p.distanceText === "0 m") return `<span class="proximity-chip proximity-unknown" title="The host has not added exact coordinates yet">&#8982; Distance unknown &mdash; check the map or ask the host</span>`;
   return `<span class="proximity-chip" title="Distance and travel time to ${esc(p.university)}">&#8982; ${esc(p.university.replace(/ University$|, [A-Za-z ]+$/, ""))} &middot; ${esc(p.distanceText)}${p.etaText ? ` &middot; ${esc(p.etaText)}` : ""}</span>`;
 }
 
@@ -564,8 +564,8 @@ function roommateCard(person) {
   return `<article class="roommate-card glass">
     <button class="roommate-avatar" data-action="view-roommate" data-id="${person.id}" aria-label="Open profile">${initials(person.name)}</button>
     <div class="roommate-copy">
-      <div><h3>${esc(person.name)}</h3><span>${person.score || 72}% match</span></div>
-      <p>${esc(person.bio || "Verified student looking for a compatible co-living match.")}</p>
+      <div><h3>${esc(person.name)}</h3><span>${person.score ? `${person.score}% match` : "Add your preferences for a match score"}</span></div>
+      <p>${person.bio ? esc(person.bio) : "This student has not written an about-me yet."}</p>
       <div class="amenities">${(person.habits || []).slice(0,3).map(habit=>`<span class="amenity">${esc(habit)}</span>`).join("")}<span class="amenity">${esc(person.university || "University")}</span></div>
     </div>
     <div class="roommate-actions"><button class="button subtle" data-action="view-roommate" data-id="${person.id}">Profile</button><button class="button primary" data-action="connect-roommate" data-id="${person.id}">Message</button></div>
@@ -582,18 +582,18 @@ function tenantHome() {
       <div class="hero-copy">
         <span class="eyebrow"><i class="live-dot"></i> ${esc(state.user.university)}</span>
         <h1>Good ${new Date().getHours()<12?"morning":new Date().getHours()<17?"afternoon":"evening"}, ${esc(firstName(state.user.name))}.</h1>
-        <p>Find a verified home, connect with a compatible roommate, and handle the entire booking without leaving Offkay.</p>
+        <p>Find a home, connect with a roommate, book it all here.</p>
         <div class="hero-actions"><button class="button primary" data-tab="explore">Explore homes &rarr;</button><button class="button subtle" data-action="open-matches">Find a roommate</button></div>
       </div>
       <div class="hero-visual"><div class="mini-property"><div class="mini-building"></div></div><div class="float-stat"><b>${visible.length || state.listings.length} nearby</b>verified places to explore</div></div>
     </div>
-    <div class="metrics">
-      <div class="metric glass"><div class="metric-top"><span>Saved homes</span><span class="metric-icon">${icon("heart")}</span></div><strong>${savedCount}</strong><small>Properties on your shortlist</small></div>
-      <div class="metric glass"><div class="metric-top"><span>Conversations</span><span class="metric-icon">${icon("messages")}</span></div><strong>${state.conversations.length}</strong><small>Active landlord and roommate chats</small></div>
-      <div class="metric glass"><div class="metric-top"><span>Confirmed bookings</span><span class="metric-icon">${icon("lock")}</span></div><strong>${paidBookings}</strong><small>Payments successfully completed</small></div>
+    <div class="metrics-strip">
+      <div class="metric-col"><span class="metric-icon">${icon("heart")}</span><strong>${savedCount}</strong><span class="metric-label">Saved</span></div>
+      <div class="metric-col"><span class="metric-icon">${icon("messages")}</span><strong>${state.conversations.length}</strong><span class="metric-label">Chats</span></div>
+      <div class="metric-col"><span class="metric-icon">${icon("lock")}</span><strong>${paidBookings}</strong><span class="metric-label">Bookings</span></div>
     </div>
     <div class="section-head"><div><h2>Recommended near you</h2><p>Verified homes around your university and budget.</p></div><button class="link-button" data-tab="explore">View everything &rarr;</button></div>
-    <div class="listing-grid">${visible.map(item => listingCard(item)).join("") || emptyState("No local homes yet","Try another university from the Explore tab.")}</div>`;
+    ${visible.length ? `<div class="card-row-fade"><div class="listing-grid home-carousel">${visible.map(item => listingCard(item)).join("")}</div></div>` : emptyState("No local homes yet","Try another university from the Explore tab.")}`;
 }
 
 function landlordHome() {
@@ -963,7 +963,7 @@ async function sendMessage(event) {
 function renderProfile() {
   if (state.settingsView) return renderSettings();
   const tenant = state.user.role === "tenant";
-  const hosting = canHost();
+  const hosting = canHost() && !tenant;
   const savedCount = state.listings.filter(item=>item.saved).length;
   const mine = state.ownListings.length;
   const paid = state.bookings.filter(item=>item.status==="paid").length;
@@ -986,7 +986,7 @@ function renderProfile() {
     </section>
 
     <section class="profile-section">
-      <div class="profile-section-head"><h2>Trust &amp; verification</h2><p>${tenant?"Verified students get more roommate matches and can book faster.":"Verified hosts appear with a trust badge on every listing."}</p></div>
+      <div class="profile-section-head"><h2>Trust &amp; verification</h2><p>${tenant?"Verified students get more roommate matches and can book faster.":hosting?"Verified hosts appear with a trust badge on every listing.":"Verification confirms your identity for everything you do on Offkay."}</p></div>
       ${verificationPanel(verificationState(), state.verification)}
     </section>
 
@@ -997,9 +997,9 @@ function renderProfile() {
           ? `<div class="profile-stat"><b>${savedCount}</b><span>SAVED HOMES</span></div>
              <div class="profile-stat"><b>${paid}</b><span>CONFIRMED</span></div>
              <div class="profile-stat"><b>${connections}</b><span>CONNECTIONS</span></div>`
-          : `<div class="profile-stat"><b>${mine}</b><span>PROPERTIES</span></div>
+          : hosting ? `<div class="profile-stat"><b>${mine}</b><span>PROPERTIES</span></div>
              <div class="profile-stat"><b>${hostPaid}</b><span>CONFIRMED</span></div>
-             <div class="profile-stat"><b>${hostRequests}</b><span>TOUR REQUESTS</span></div>`}
+             <div class="profile-stat"><b>${hostRequests}</b><span>TOUR REQUESTS</span></div>` : ""}
       </div>
     </section>
 
@@ -1012,7 +1012,7 @@ function renderProfile() {
         ${chosenHabits.length ? `<div class="pref-habits">${chosenHabits.map(habit=>`<span class="pref-habit">${esc(habit)}</span>`).join("")}</div>` : `<p class="pref-empty">No lifestyle preferences yet — add a few so matching can find your people.</p>`}
         <button class="button subtle small" data-action="focus-profile-form">Edit preferences</button>
       </div>
-    </section>` : `
+    </section>` : hosting ? `
     <section class="profile-section">
       <div class="profile-section-head"><h2>Hosting</h2><p>Your published properties and incoming requests.</p></div>
       <div class="pref-card glass">
@@ -1021,10 +1021,10 @@ function renderProfile() {
         <div class="pref-line"><span>Confirmed bookings</span><b>${hostPaid}</b></div>
         <button class="button subtle small" data-tab="home">${icon("home")} Manage properties</button>
       </div>
-    </section>`}
+    </section>` : ""}
 
     <section class="profile-section">
-      <div class="profile-section-head"><h2>Profile details</h2><p>${tenant?"Your university, budget, and habits improve roommate recommendations.":"These details appear on your host profile."}</p></div>
+      <div class="profile-section-head"><h2>Profile details</h2><p>${tenant?"Your university, budget, and habits improve roommate recommendations.":hosting?"These details appear on your host profile.":"Your details appear to the people you connect with."}</p></div>
       <form class="profile-form glass form-stack" id="profileForm">
         <div class="two-fields"><label>Full name<input name="name" value="${esc(state.user.name)}" required></label><label>Phone number<input name="phone" type="tel" value="${esc(state.user.phone || "")}"></label></div>
         <label>University<select name="university">${state.universities.map(name=>`<option ${state.user.university===name?"selected":""}>${esc(name)}</option>`).join("")}</select></label>
@@ -1472,7 +1472,11 @@ function openListing(id) {
       <div class="detail-copy">
         <span class="eyebrow">${esc(item.type)}</span><h2>${esc(item.title)}</h2><span>&#8982; ${esc(item.area)} &middot; ${esc(item.university)}</span>
         <div class="detail-price">${money(item.price)} <small>/ academic year</small></div>
-        ${item.proximity?.distanceText ? `<div class="proximity-strip">
+        ${(!item.proximity?.distanceText || item.proximity.distanceText === "0 m") ? `<div class="proximity-strip proximity-unknown">
+          <span class="proximity-strong">Distance to campus unknown</span>
+          <small>The host has not added exact coordinates for this home yet</small>
+          <em>Ask the host for directions, or check the area on the map</em>
+        </div>` : item.proximity?.distanceText ? `<div class="proximity-strip">
           <span class="proximity-strong">${esc(item.proximity.distanceText)}${item.proximity.etaText ? ` &middot; ${esc(item.proximity.etaText)}` : ""}</span>
           <small>from this home to ${esc(item.proximity.university)}</small>
           <em>${item.proximity.provider === "estimate" ? "straight-line estimate — actual road distance may differ" : `live route via ${esc(item.proximity.provider)}`}</em>
@@ -1779,7 +1783,7 @@ async function openMatches() {
       <div class="modal-head"><div><span class="eyebrow">Best roommate match</span></div><button class="close-button">&times;</button></div>
       <div class="match-card">
         <div class="match-person"><span class="match-score">${match.score}% match</span></div>
-        <div class="match-info"><span>${esc(match.university)}</span><h2>${esc(match.name)}</h2><p>${esc(match.bio || "A verified student looking for a compatible roommate near campus.")}</p>
+        <div class="match-info"><span>${esc(match.university || "University not set")}</span><h2>${esc(match.name)}</h2><p>${match.bio ? esc(match.bio) : "This student has not completed their profile yet - connect to learn more about them."}</p>
           <div class="amenities">${(match.habits||[]).map(habit=>`<span class="amenity">${esc(habit)}</span>`).join("")}<span class="amenity">Budget ${money(match.budget||0)}</span></div>
           <div class="match-actions"><button class="button subtle" data-action="close-modal">Maybe later</button><button class="button primary" data-action="connect-roommate" data-id="${match.id}">Connect with ${esc(firstName(match.name))} &rarr;</button></div>
         </div>
@@ -1791,12 +1795,12 @@ function roommateProfile(id) {
   const match = state.roommateCandidates.find(item => item.id === id);
   if (!match) return toast("Roommate profile not found");
   modal(`
-    <div class="modal-head"><div><span class="eyebrow">${match.score || 72}% match</span><h2>${esc(match.name)}</h2><p>${esc(match.university || "Verified student")}</p></div><button class="close-button">&times;</button></div>
+    <div class="modal-head"><div><span class="eyebrow">${match.score ? `${match.score}% match` : "Roommate"}</span><h2>${esc(match.name)}</h2><p>${esc(match.university || "University not set")}</p></div><button class="close-button">&times;</button></div>
     <div class="match-card">
-      <div class="match-person"><span class="match-score">${match.score || 72}% match</span></div>
+      <div class="match-person"><span class="match-score">${match.score ? `${match.score}% match` : "Roommate"}</span></div>
       <div class="match-info">
         <h2>${esc(firstName(match.name))}'s profile</h2>
-        <p>${esc(match.bio || "Student looking for a compatible roommate cluster.")}</p>
+        <p>${match.bio ? esc(match.bio) : "This student has not written an about-me yet."}</p>
         <div class="cost-row"><span>Budget ceiling</span><b>${money(match.budget || 0)}</b></div>
         <div class="amenities">${(match.habits||[]).map(habit=>`<span class="amenity">${esc(habit)}</span>`).join("") || `<span class="amenity">No habits yet</span>`}</div>
         <div class="match-actions"><button class="button subtle" data-action="close-modal">Close</button><button class="button primary" data-action="connect-roommate" data-id="${match.id}">Start conversation</button></div>
