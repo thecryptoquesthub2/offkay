@@ -842,13 +842,29 @@ function listingOccupancy(listing, db) {
   return { occupied: paidCount, capacity, full: paidCount >= capacity };
 }
 
+// Deterministic ~200m jitter derived from the listing id: the map pin lands
+// in the same neighborhood on every load but never reveals the exact home.
+function approximateCoords(listing) {
+  const lat = Number(listing.latitude), lng = Number(listing.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || (!lat && !lng)) return null;
+  let hash = 0;
+  for (const char of String(listing.id || "")) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  const jitterLat = ((hash % 1000) / 1000 - 0.5) * 0.0036;
+  const jitterLng = (((hash >>> 10) % 1000) / 1000 - 0.5) * 0.0044;
+  return { approxLatitude: +(lat + jitterLat).toFixed(6), approxLongitude: +(lng + jitterLng).toFixed(6) };
+}
+
 function listingPayload(listing, db, user) {
   const owner = db.users.find(item => item.id === listing.ownerId);
-  // Property coordinates stay server-side: only the proximity summary, which
-  // contains the public university coordinates, is exposed to clients.
+  // Exact property coordinates stay server-side (they reveal the home).
+  // Clients get neighborhood-accurate approximate coordinates for maps;
+  // the owner additionally receives exact coordinates for editing.
   const { latitude, longitude, ...publicListing } = listing;
+  const isOwnerView = Boolean(user && user.id === listing.ownerId);
   return {
     ...publicListing,
+    ...(isOwnerView ? { latitude, longitude } : {}),
+    ...approximateCoords(listing),
     owner: owner ? { id:owner.id, name:owner.name, verified:owner.verified } : null,
     hostView: Boolean(owner && (owner.verified === true || owner.role === "landlord")),
     saved: Boolean(user && db.saved.some(item => item.userId === user.id && item.listingId === listing.id)),

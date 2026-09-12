@@ -39,9 +39,9 @@ const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp
 const time = iso => new Intl.DateTimeFormat("en-NG",{hour:"numeric",minute:"2-digit"}).format(new Date(iso));
 const firstName = name => String(name || "").split(" ")[0];
 const mapUrl = listing => {
-  const hasCoords = Number.isFinite(listing.latitude) && Number.isFinite(listing.longitude) && (listing.latitude || listing.longitude);
-  return hasCoords
-    ? `https://www.openstreetmap.org/?mlat=${listing.latitude}&mlon=${listing.longitude}#map=17/${listing.latitude}/${listing.longitude}`
+  const coords = listingCoords(listing);
+  return coords
+    ? `https://www.openstreetmap.org/?mlat=${coords.lat}&mlon=${coords.lng}#map=17/${coords.lat}/${coords.lng}`
     : `https://www.openstreetmap.org/search?query=${encodeURIComponent(`${listing.area || ""}, ${listing.university || ""}, Nigeria`.replace(/^,\s+|,\s+$/g,""))}`;
 };
 const icon = name => `<svg class="off-icon" aria-hidden="true"><use href="/offkay-icons.svg#${name}"></use></svg>`;
@@ -708,7 +708,9 @@ function renderExplore() {
 
 function listingCoords(item) {
   const lat = Number(item.latitude), lng = Number(item.longitude);
-  return Number.isFinite(lat) && Number.isFinite(lng) && (lat || lng) ? {lat,lng} : null;
+  if (Number.isFinite(lat) && Number.isFinite(lng) && (lat || lng)) return {lat,lng};
+  const altLat = Number(item.approxLatitude), altLng = Number(item.approxLongitude);
+  return Number.isFinite(altLat) && Number.isFinite(altLng) && (altLat || altLng) ? {lat:altLat,lng:altLng} : null;
 }
 
 const TILE_SIZE = 256;
