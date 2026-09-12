@@ -711,12 +711,35 @@ function listingCoords(item) {
   return Number.isFinite(lat) && Number.isFinite(lng) && (lat || lng) ? {lat,lng} : null;
 }
 
+const TILE_SIZE = 256;
+function lngToTileX(lng, z) { return (lng + 180) / 360 * (2 ** z); }
+function latToTileY(lat, z) { const rad = lat * Math.PI / 180; return (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * (2 ** z); }
+
+/* A static tile view centered on the listing: one 3x2 grid of real OSM tiles
+   (tile.openstreetmap.org permits light app use) with the pin placed at the
+   exact fractional tile position. This replaces the openstreetmap.org/export
+   embed iframe, which began rejecting production hotlinks (blank frames). */
 function osmEmbed(item, height) {
   const coords = listingCoords(item);
   if (!coords) return "";
   const {lat,lng} = coords;
-  const delta = 0.004;
-  return `<iframe class="osm-embed" style="height:${height}px" title="Map of ${esc(item.title)}" src="https://www.openstreetmap.org/export/embed.html?bbox=${lng-delta}%2C${lat-delta}%2C${lng+delta}%2C${lat+delta}&layer=mapnik&marker=${lat}%2C${lng}" loading="lazy"></iframe>`;
+  const z = 16;
+  const cols = 3, rows = 2;
+  const x = lngToTileX(lng, z), y = latToTileY(lat, z);
+  const xTile = Math.floor(x), yTile = Math.floor(y);
+  const tiles = [];
+  for (let dy = -1; dy <= rows - 2; dy++) {
+    for (let dx = -1; dx <= cols - 2; dx++) {
+      tiles.push(`<div class="map-tile" style="background-image:url('https://tile.openstreetmap.org/${z}/${xTile+dx}/${yTile+dy}.png')"></div>`);
+    }
+  }
+  const pinLeft = ((x - (xTile - 1)) / cols) * 100;
+  const pinTop = ((y - (yTile - 1)) / rows) * 100;
+  return `<div class="osm-embed map-static" style="height:${height}px" title="Map of ${esc(item.title)}">
+    <div class="map-tile-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr)">${tiles.join("")}</div>
+    <span class="map-pin" style="left:${pinLeft}%;top:${pinTop}%"></span>
+    <span class="map-attribution">© OpenStreetMap contributors</span>
+  </div>`;
 }
 
 function mapCanvas(items) {
@@ -1252,7 +1275,7 @@ function renderProfile() {
     </section>
 
     <section class="profile-section">
-      <div class="profile-section-head"><h2>Trust &amp; verification</h2><p>${tenant?"Verified students get more roommate matches and can book faster.":hosting?"Verified hosts appear with a trust badge on every listing.":"Verification confirms your identity for everything you do on Offkay."}</p></div>
+      <div class="profile-section-head"><h2>Verification</h2><p>${tenant?"Verified students get more roommate matches and can book faster.":hosting?"Verified hosts appear with a verification badge on every listing.":"Verification confirms your identity for everything you do on Offkay."}</p></div>
       ${verificationPanel(verificationState(), state.verification)}
     </section>
 
@@ -1401,7 +1424,7 @@ function termsSheet() {
       <h3>2. Listings and bookings</h3><p>Landlords are responsible for the accuracy of their listings. A booking is only confirmed after every rent share is successfully paid and verified server-side by Offkay.</p>
       <h3>3. Payments</h3><p>Rent is processed by Paystack. Offkay currently charges no platform fee. Split-payment invite links are tied to a single booking and cannot be reused.</p>
       <h3>4. Community conduct</h3><p>Treat other members with respect. Connection requests, messages, and profiles must not be used for harassment, scams, or sharing anyone's private information. Use the report link on any listing to flag concerns &mdash; reports are private.</p>
-      <h3>5. Verification</h3><p>Verification documents are reviewed manually and used only for trust checks. Offkay never publishes your NIN, ID photos, or contact details to other users.</p>
+      <h3>5. Verification</h3><p>Verification documents are reviewed manually and used only for identity checks. Offkay never publishes your NIN, ID photos, or contact details to other users.</p>
     </div>
     <button class="button primary wide" data-action="close-modal">Got it</button>`);
 }
@@ -1550,7 +1573,7 @@ async function renderAdmin() {
   const pending = overview.verifications || [];
   const events = history.events || [];
   host.innerHTML = `
-    <div class="page-head"><div><h1>Admin dashboard</h1><p>Core administrator tools — every action here is recorded in the audit trail with your account.</p></div></div>
+    <div class="page-head"><div><h1>Admin dashboard</h1><p>Review verification submissions and manage the platform. Every action is recorded in the audit trail.</p></div></div>
     <div class="metrics">
       <div class="metric"><span class="metric-icon">&#9873;</span><div><small>Pending verifications</small><strong>${pending.length}</strong></div></div>
       <div class="metric"><span class="metric-icon">&#10003;</span><div><small>Reviews recorded</small><strong>${events.length}</strong></div></div>
@@ -1594,9 +1617,10 @@ async function adminReviewSheet(verificationId) {
       <div class="cost-row"><span>NIN (masked)</span><b>${esc(item.ninMasked || "—")}</b></div>
       <div class="cost-row"><span>Submitted</span><b>${new Date(item.createdAt).toLocaleString()}</b></div>
       <div class="admin-docs">
-        ${item.hasIdCard ? `<a class="button subtle" href="/api/admin/verification/${item.id}/document/idCard" target="_blank" rel="noopener">View ID card</a>` : `<span class="verify-reason">No ID card image</span>`}
-        ${item.hasSupportDocument ? `<a class="button subtle" href="/api/admin/verification/${item.id}/document/support" target="_blank" rel="noopener">View support document</a>` : `<span class="verify-reason">No support document</span>`}
+        ${item.hasIdCard ? `<figure class="admin-doc"><img src="/api/admin/verification/${item.id}/document/idCard" alt="ID card upload" loading="lazy"><figcaption>ID card</figcaption></figure>` : `<span class="verify-reason">No ID card image</span>`}
+        ${item.hasSupportDocument ? `<figure class="admin-doc"><img src="/api/admin/verification/${item.id}/document/support" alt="Support document upload" loading="lazy"><figcaption>Support document</figcaption></figure>` : `<span class="verify-reason">No support document</span>`}
       </div>
+      <p class="share-hint">Images load through the admin-only document endpoint; open one in a new tab with a long-press or right-click if you need the full resolution.</p>
       <label style="display:grid;gap:7px"><span class="settings-group-label">Rejection reason (required when rejecting)</span>
         <input id="adminRejectReason" placeholder="e.g. Document is not readable"></label>
       <div class="modal-actions">
