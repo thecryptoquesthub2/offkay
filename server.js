@@ -58,7 +58,7 @@ async function sendPasswordResetEmail(to, resetUrl) {
   </div>`;
   if (!RESEND_API_KEY) {
     console.log(`[password-reset] RESEND_API_KEY not set - dev delivery. Reset link for ${to}: ${resetUrl}`);
-    return { delivered: false };
+    return { delivered: false, delivery: "skipped" };
   }
   try {
     const response = await fetch("https://api.resend.com/emails", {
@@ -67,14 +67,16 @@ async function sendPasswordResetEmail(to, resetUrl) {
       body: JSON.stringify({ from: RESEND_FROM, to: [to], subject, text, html })
     });
     if (!response.ok) {
+      // Logged WITHOUT any credential material: status code + provider message
+      // excerpt only. The API key itself never appears in logs.
       console.error("Resend rejected the reset email:", response.status, (await response.text().catch(() => "")).slice(0, 300));
-      return { delivered: false };
+      return { delivered: false, delivery: "failed" };
     }
     const payload = await response.json().catch(() => ({}));
-    return { delivered: true, id: payload?.id };
+    return { delivered: true, delivery: "sent", id: payload?.id };
   } catch (err) {
     console.error("Resend reset email request failed:", err?.message || err);
-    return { delivered: false };
+    return { delivered: false, delivery: "failed" };
   }
 }
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "offkay-admin-dev";
@@ -1226,7 +1228,11 @@ async function api(req, res, url) {
     if (!origin) return error(res, 400, "Cannot determine the request origin");
     const resetUrl = `${origin}/reset.html?token=${token}`;
     const delivery = await sendPasswordResetEmail(account.email, resetUrl);
-    return json(res, 200, { ...generic, devMode: !RESEND_API_KEY, delivered: delivery.delivered });
+    // `delivery` tells the client exactly what happened ("sent" | "failed" |
+    // "skipped") so the UI can report a provider failure honestly instead of
+    // claiming an email is on its way. `delivered`/`devMode` stay for
+    // backward compatibility with existing tests.
+    return json(res, 200, { ...generic, devMode: !RESEND_API_KEY, delivered: delivery.delivered, delivery: delivery.delivery });
   }
 
   const resetVerifyMatch = route.match(/^\/api\/auth\/reset\/([a-f0-9]{64})$/);

@@ -230,8 +230,18 @@ async function forgotPassword(event) {
     const email = String(new FormData(event.currentTarget).get("email") || "").trim();
     const data = await request("/api/auth/forgot", { method: "POST", body: JSON.stringify({ email }) });
     setAuthMode("login");
-    showAuthBanner("ok", data.message || "If an Offkay account exists for that email, a reset link is on its way.");
-    if (data.devMode) showAuthBanner("ok", `${data.message} (Dev mode: no RESEND_API_KEY is configured, so the link is printed in the server console.)`);
+    if (data.delivery === "sent") {
+      showAuthBanner("ok", data.message || "If an Offkay account exists for that email, a reset link is on its way.");
+    } else if (data.delivery === "failed") {
+      // The provider rejected or dropped the message - never claim it was
+      // sent. Offer to retry instead.
+      showAuthBanner("error", "We could not send the reset email right now. Please try again in a few minutes.");
+    } else {
+      // Delivery skipped: either no account exists for that email (the
+      // endpoint stays deliberately vague) or RESEND_API_KEY is not set.
+      showAuthBanner("ok", data.message || "If an Offkay account exists for that email, a reset link is on its way. It expires in 30 minutes.");
+      if (data.devMode) showAuthBanner("ok", `${data.message} (Dev mode: no RESEND_API_KEY is configured, so the link is printed in the server console.)`);
+    }
   } catch (error) {
     showAuthBanner("error", error.message);
   } finally { setLoading(button, false); }
@@ -1400,25 +1410,6 @@ async function saveProfile(event) {
   finally { setLoading(button,false); }
 }
 
-function settingsSheet() {
-  const themes = [
-    {id:"offkay",name:"Offkay",note:"Brand default",colors:["#FAFAFA","#344E67","#80DBEE","#FF7F6D"]},
-    {id:"slate",name:"Slate",note:"Cool and quiet",colors:["#F0F2F5","#39586E","#E4EBF0","#3C7564"]},
-    {id:"clay",name:"Clay",note:"Warm and grounded",colors:["#F6F1EC","#9A5F48","#F0DED2","#537256"]},
-    {id:"midnight",name:"Midnight",note:"Low-light viewing",colors:["#181B20","#8DBFAC","#303B43","#F08A87"]}
-  ];
-  modal(`
-    <div class="modal-head"><div><span class="eyebrow">Settings</span><h2>Account &amp; appearance</h2><p>Palettes, hosting, verification, and your sign-out controls.</p></div><button class="close-button">&times;</button></div>
-    <div class="settings-stack">
-      <button class="settings-row" data-action="open-verification">${icon("verified")} <span><b>${verificationState()==="REJECTED"?"Resubmit verification":"Manual verification"}</b><small>NIN, ID card, and student/host document</small></span><em>${esc(verificationStatusLabel())}</em></button>
-      ${canHost() ? `<button class="settings-row" data-action="switch-view">${icon("home")} <span><b>${inHostView() ? "Switch to guest view" : "Switch to host view"}</b><small>Keep your bookings and roommate matching in the same account</small></span><em>${inHostView() ? "Host" : "Guest"}</em></button><button class="settings-row" data-action="new-listing">${icon("plus")} <span><b>Add a house</b><small>Every new property goes through verification</small></span><em>Host</em></button>` : `<button class="settings-row" data-action="activate-host">${icon("home")} <span><b>Become a host</b><small>List spaces while keeping your guest account and roommate profile</small></span><em>Start</em></button>`}
-      <button class="settings-row" data-action="confirm-logout">${icon("settings")} <span><b>Sign out</b><small>End this session on this device</small></span><em>&rarr;</em></button>
-      <button class="settings-row danger-row" data-action="confirm-delete-account">${icon("settings")} <span><b>Delete my account</b><small>Permanently remove your profile, listings, and messages</small></span><em>&rarr;</em></button>
-    </div>
-    <div class="theme-grid">${themes.map(theme=>`<button class="theme-choice ${state.theme===theme.id?"active":""}" data-action="set-theme" data-theme="${theme.id}"><span class="theme-swatches">${theme.colors.map(color=>`<i style="background:${color}"></i>`).join("")}</span><b>${theme.name}</b><small>${theme.note}</small></button>`).join("")}</div>
-    <div class="payment-note">Offkay is the default brand theme. Your preference is saved on this device.</div>`);
-}
-
 function confirmLogout() {
   modal(`
     <div class="modal-head"><div><h2>Sign out of Offkay?</h2><p>You can sign back in any time with your email and password.</p></div><button class="close-button">&times;</button></div>
@@ -1958,7 +1949,19 @@ function showPayment(booking) {
 }
 
 async function openMatches() {
-  if (state.user.role !== "tenant") return listingForm();
+  // "Find a roommate" is a discovery action: it must never open the landlord
+  // "Add a new property" form. Tenants go to the Explore tab's Roommate
+  // matching (the best-match modal below still opens on top); everyone else
+  // gets the People directory, which the server serves for every role - the
+  // Roommates mode would be empty for them because /api/session only computes
+  // roommateCandidates for tenants.
+  closeModal();
+  state.exploreMode = state.user.role === "tenant" ? "roommates" : "people";
+  switchTab("explore");
+  if (state.user.role !== "tenant") {
+    toast("Roommate matching is for tenant accounts - browse compatible people in Explore.");
+    return;
+  }
   try {
     const data = await request("/api/roommates");
     if (!data.matches.length) {
@@ -2060,7 +2063,6 @@ function bindEvents() {
     if (action==="connect-roommate") connectRoommate(id);
     if (action==="close-modal") closeModal();
     if (action==="finish-inspection") {closeModal();switchTab("messages");toast("Inspection request saved");}
-    if (action==="open-settings") settingsSheet();
     if (action==="open-verification") verificationSheet();
     if (action==="admin-review") adminReviewSheet(id);
     if (action==="goto-admin") switchTab("admin");
@@ -2079,7 +2081,7 @@ function bindEvents() {
       closeModal(); enterApp(); switchTab("home");
       toast(state.hostView ? "Host view enabled" : "Guest view enabled");
     }
-    if (action==="set-theme") {applyTheme(actionNode.dataset.theme);settingsSheet();}
+    if (action==="set-theme") applyTheme(actionNode.dataset.theme);
     if (action==="explore-mode") {state.exploreMode=actionNode.dataset.mode;renderExplore();}
     if (action==="finish-payment") {closeModal();switchTab("home");renderHome();toast("Booking confirmed");}
     if (action==="filter-type") {state.filters.homes.type=actionNode.dataset.type;renderExplore();}
