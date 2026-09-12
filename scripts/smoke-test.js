@@ -52,9 +52,9 @@ async function call(j, method, url, body) {
 }
 
 function startsWithDb(db) {
-  const tenant = db.users.find(u => u.email === "tenant@demo.test");
-  const landlord = db.users.find(u => u.email === "landlord@demo.test");
-  return Boolean(tenant && landlord && db.listings.some(l => l.id === "lst_palm"));
+  const tenant = db.users.find(u => u.email === "fixture.tenant@example.com");
+  const landlord = db.users.find(u => u.email === "landlord.fixture@example.com");
+  return Boolean(tenant && landlord && db.listings.some(l => l.title === "Capacity Lodge"));
 }
 
 async function waitForServer(proc) {
@@ -72,7 +72,7 @@ async function waitForServer(proc) {
 function bootServer() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "offkay-test-"));
   const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "", ADMIN_TOKEN: "test-admin-token" },
+    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "", ADMIN_TOKEN: "test-admin-token", SIGNUP_RATE_LIMIT: "60" },
     stdio: ["ignore", "inherit", "inherit"]
   });
   return { proc, tmp };
@@ -119,13 +119,16 @@ async function run() {
     check("session restores user on bootstrap", me.payload.user?.email === newAccount.email);
     check("bootstrap includes ownListings for signed-in user", Array.isArray(me.payload.ownListings));
 
-    const demo = jar();
-    const demoLogin = await call(demo, "POST", "/api/auth/login", { email:"tenant@demo.test", password:"demo1234" });
-    check("demo tenant can sign in", demoLogin.status === 200);
+    // API-provisioned fixtures (the app ships with an empty database; no demo seed).
+    const tenant = jar();
+    const tenantSignup = await call(tenant, "POST", "/api/auth/signup", { name:"Fixture Tenant", email:"fixture.tenant@example.com", password:"password123", role:"tenant", phone:"08011100011", university:"University of Lagos" });
+    check("fixture tenant signup (201)", tenantSignup.status === 201);
+    const peer = jar();
+    const peerSignup = await call(peer, "POST", "/api/auth/signup", { name:"Zainab Peer", email:"fixture.peer@example.com", password:"password123", role:"tenant", phone:"08011100012", university:"University of Lagos" });
+    check("fixture peer signup (201)", peerSignup.status === 201);
+    const demo = tenant;
     const demoBootstrap = await call(demo, "GET", "/api/bootstrap");
-    check("demo tenant sees roommate candidates", demoBootstrap.payload.roommateCandidates.length > 0);
     check("roommate payload hides email and phone", demoBootstrap.payload.roommateCandidates.every(c => c.email === undefined && c.phone === undefined));
-    check("demo tenant conversations present", demoBootstrap.payload.conversations.length > 0);
     check("conversation payload includes profile-safe other user", demoBootstrap.payload.conversations.every(c => c.other && c.other.email === undefined));
 
     const logout = await call(session, "POST", "/api/auth/logout");
@@ -147,7 +150,7 @@ async function run() {
     check("tenant cannot publish without hosting (403)", listingAsTenant.status === 403);
 
     const landlord = jar();
-    await call(landlord, "POST", "/api/auth/login", { email:"landlord@demo.test", password:"demo1234" });
+    await call(landlord, "POST", "/api/auth/signup", { name:"Fixture Landlord", email:"landlord.fixture@example.com", password:"password123", role:"landlord", phone:"08011100013", university:"University of Ibadan" });
     const badListing = await call(landlord, "POST", "/api/listings", { title:"", area:"", price:"abc" });
     check("landlord listing validation (400)", badListing.status === 400);
 
@@ -166,9 +169,6 @@ async function run() {
 
     const show = await call(landlord, "PATCH", `/api/listings/${listingId}`, { status:"active" });
     check("owner can republish listing", show.status === 200 && show.payload.listing.status === "active");
-
-    const tenant = jar();
-    await call(tenant, "POST", "/api/auth/login", { email:"tenant@demo.test", password:"demo1234" });
 
     const save = await call(tenant, "POST", `/api/listings/${listingId}/save`);
     check("tenant can save listing", save.status === 200 && save.payload.saved === true);
@@ -258,7 +258,7 @@ async function run() {
       const keyedPort = PORT + 2;
       const keyedTmp = fs.mkdtempSync(path.join(os.tmpdir(), "offkay-keyed-"));
       const keyedProc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-        env: { ...process.env, PORT: String(keyedPort), HOST: "127.0.0.1", OFFKAY_DATA_DIR: keyedTmp, PAYSTACK_SECRET_KEY: "sk_test_smoke_fake_key" },
+        env: { ...process.env, PORT: String(keyedPort), HOST: "127.0.0.1", OFFKAY_DATA_DIR: keyedTmp, PAYSTACK_SECRET_KEY: "sk_test_smoke_fake_key", SIGNUP_RATE_LIMIT: "20" },
         stdio: ["ignore", "ignore", "ignore"]
       });
       try {
@@ -280,10 +280,14 @@ async function run() {
             return { status: res.status, payload: await res.json().catch(() => ({})) };
           };
           const keyedTenant = jar();
-          await keyedCall(keyedTenant, "POST", "/api/auth/login", { email: "tenant@demo.test", password: "demo1234" });
+          await keyedCall(keyedTenant, "POST", "/api/auth/signup", { name:"Keyed Tenant", email:"keyed.tenant@example.com", password:"password123", role:"tenant", university:"University of Ibadan" });
+          const keyedLandlord = jar();
+          await keyedCall(keyedLandlord, "POST", "/api/auth/signup", { name:"Keyed Landlord", email:"keyed.landlord@example.com", password:"password123", role:"landlord", university:"University of Ibadan" });
+          const keyedListingCreate = await keyedCall(keyedLandlord, "POST", "/api/listings", { title:"Keyed Lodge", area:"Sango", university:"University of Ibadan", price:200000, type:"Shared", bedrooms:2, bathrooms:1, description:"Keyed fixture", amenities:[] });
+          check("keyed fixture listing created", keyedListingCreate.status === 201);
           const keyedBootstrap = await keyedCall(keyedTenant, "GET", "/api/bootstrap");
           check("bootstrap reports payments enabled with key", keyedBootstrap.payload.paymentsEnabled === true);
-          const keyedListing = keyedBootstrap.payload.listings[0];
+          const keyedListing = keyedListingCreate.payload.listing;
           const keyedBooking = await keyedCall(keyedTenant, "POST", "/api/bookings", { listingId: keyedListing.id, splitCount: 2 });
           check("keyed server accepts booking", keyedBooking.status === 201);
           const keyedConfirm = await keyedCall(keyedTenant, "POST", `/api/bookings/${keyedBooking.payload.booking.id}/confirm-payment`);

@@ -177,8 +177,21 @@ function setAuthMode(mode) {
   $("#authEyebrow").textContent = signup ? "Join Offkay" : "Offkay";
   $("#authTitle").textContent = signup ? "Create your account" : "Sign in";
   $("#authSubtitle").textContent = signup
-    ? "Choose how you will use Offkay. You can update your details later."
+    ? "One account for housing, roommates, and messages."
     : "Access your housing, messages, and bookings.";
+}
+
+function toggleSignupUniversity(show) {
+  const wrap = $("#suUniversityWrap");
+  if (!wrap) return;
+  const select = wrap.querySelector("select");
+  if (show) {
+    wrap.classList.remove("collapsed");
+    if (select) select.required = true;
+  } else {
+    wrap.classList.add("collapsed");
+    if (select) select.required = false;
+  }
 }
 
 async function bootstrap() {
@@ -224,7 +237,7 @@ function populateUniversities() {
     "Federal University Kashere","Alex Ekwueme Federal University"
   ];
   const list = (state.universities && state.universities.length ? state.universities : FALLBACK_UNIVERSITIES);
-  const select = $("#signupUniversity");
+  const select = $("#su-university");
   if (select) select.innerHTML = list.map(name => `<option>${esc(name)}</option>`).join("");
 }
 
@@ -241,6 +254,8 @@ function showAuth() {
 }
 
 function enterApp() {
+  // Defensive guard: never crash on a missing session (e.g. bootstrap race).
+  if (!state.user) { showAuth(); return; }
   removeBootSplash();
   $("#authScreen").classList.add("hidden");
   $("#app").classList.remove("hidden");
@@ -248,6 +263,9 @@ function enterApp() {
   $("#topAvatar").textContent = initials(state.user.name);
   $("#topName").textContent = firstName(state.user.name);
   $("#topRole").textContent = inHostView() ? "Host" : "Guest";
+  if (state.user.isCoreAdmin) {
+    request("/api/badges").then(b => { state.adminPending = b.adminPending || 0; renderNotificationDot(); }).catch(() => {});
+  }
   renderNotificationDot();
   startBadgePolling();
   $("#sidebarCard").innerHTML = inHostView()
@@ -267,6 +285,11 @@ function renderNotificationDot() {
     node.textContent = notifCount > 99 ? "99+" : String(notifCount);
     node.hidden = notifCount === 0;
   });
+  const adminCount = Number(state.adminPending) || 0;
+  $$(".admin-badge").forEach(node => {
+    node.textContent = adminCount > 99 ? "99+" : String(adminCount);
+    node.hidden = adminCount === 0;
+  });
   const dot = $("#notificationButton i");
   if (dot) dot.style.display = notifCount ? "block" : "none";
 }
@@ -279,9 +302,10 @@ function startBadgePolling() {
     if (!state.user || document.hidden) return;
     try {
       const data = await request("/api/badges");
-      const changed = data.messages !== state.unreadMessages || data.notifications !== state.notificationsUnread;
+      const changed = data.messages !== state.unreadMessages || data.notifications !== state.notificationsUnread || (data.adminPending || 0) !== (state.adminPending || 0);
       state.unreadMessages = data.messages;
       state.notificationsUnread = data.notifications;
+      state.adminPending = data.adminPending || 0;
       renderNotificationDot();
       if (changed) refreshData(false).catch(() => {});
     } catch { /* transient network errors stay silent */ }
@@ -408,7 +432,7 @@ function listingCard(listing, landlordMode = false) {
           : `<button class="save-button ${listing.saved ? "saved" : ""}" data-action="save-listing" data-id="${listing.id}" aria-label="Save property">${icon("heart")}</button>`}
     </div>
     <div class="listing-info">
-      <div class="listing-title-row"><h3>${esc(listing.title)}</h3><span class="rating">&#9733; 4.${7 + (listing.title.length % 3)}</span></div>
+      <div class="listing-title-row"><h3>${esc(listing.title)}</h3></div>
       ${proximityChip(listing)}
       <div class="listing-location">${icon("pin")} ${esc(listing.area)} &middot; ${esc(listing.university)}</div>
       <div class="listing-meta"><span>${listing.bedrooms} bed</span><span>${listing.bathrooms} bath</span><span>${esc(listing.type)}</span></div>
@@ -782,8 +806,20 @@ async function loadMessages(conversationId) {
     setChatPolling(conversationId);
     const fresh = state.conversations.find(item=>item.id===conversationId);
     if (fresh && data.conversation) {
+      // Opening the conversation marks it read server-side; adopt the fresh
+      // unread count right away so the Messages badge clears on view.
+      const wasUnread = Number(fresh.unread) || 0;
       Object.assign(fresh, data.conversation);
+      if (wasUnread) {
+        state.unreadMessages = Math.max(0, (Number(state.unreadMessages) || unreadTotal()) - wasUnread);
+      }
       renderNotificationDot();
+      request("/api/badges").then(b => {
+        state.unreadMessages = b.messages;
+        state.notificationsUnread = b.notifications;
+        if (b.adminPending !== undefined) state.adminPending = b.adminPending;
+        renderNotificationDot();
+      }).catch(() => {});
     }
     const form = $("#messageForm");
     if (form) form.onsubmit = sendMessage;
@@ -1214,6 +1250,7 @@ async function adminReviewSheet(verificationId) {
 async function adminSubmitReview(verificationId, decision, reason) {
   try {
     await request(`/api/admin/verification/${verificationId}/review`,{method:"POST",body:JSON.stringify({decision,reason})});
+    request("/api/badges").then(b => { state.adminPending = b.adminPending || 0; renderNotificationDot(); }).catch(() => {});
     closeModal();
     toast(decision === "approve" ? "Verification approved" : "Verification rejected");
     await refreshData(false);
@@ -1672,16 +1709,21 @@ function bindEvents() {
     if (auth) return setAuthMode(auth.dataset.authMode);
     const role = event.target.closest("[data-role]");
     if (role) {
-      $$(".role-option").forEach(item=>item.classList.toggle("active",item===role));
-      $("#signupForm [name=role]").value=role.dataset.role;
+      $$(".role-option, .account-type-card").forEach(item=>item.classList.toggle("active",item===role));
+      const roleForm = role.closest("form");
+      if (roleForm) roleForm.querySelector("[name=role]").value = role.dataset.role;
+      if (role.closest("#signupForm")) toggleSignupUniversity(role.dataset.role === "tenant");
       return;
     }
-    const demo = event.target.closest("[data-demo]");
-    if (demo) {
-      const landlord=demo.dataset.demo==="landlord";
-      $("#loginForm [name=email]").value=landlord?"landlord@demo.test":"tenant@demo.test";
-      $("#loginForm [name=password]").value="demo1234";
-      $("#loginForm").requestSubmit();
+    const eye = event.target.closest("[data-action='toggle-password']");
+    if (eye) {
+      const input = eye.parentElement.querySelector("input");
+      if (input) {
+        const show = input.type === "password";
+        input.type = show ? "text" : "password";
+        eye.setAttribute("aria-label", show ? "Hide password" : "Show password");
+        eye.classList.toggle("showing", show);
+      }
       return;
     }
     const actionNode = event.target.closest("[data-action]");
@@ -1717,8 +1759,6 @@ function bindEvents() {
     if (action==="cancel-booking") cancelBooking(id);
     if (action==="open-map") openMap(id);
     if (action==="start-chat") startChat(id);
-    if (action==="refresh-bookings") { refreshData().then(()=>{enterApp();switchTab("profile");}); }
-    if (action==="goto-auth") showAuth();
     if (action==="switch-view") {
       state.hostView = !state.hostView;
       localStorage.setItem("offkay-host-view", String(state.hostView));

@@ -65,7 +65,7 @@ async function waitForServer(proc) {
 async function run() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "offkay-sec-"));
   const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "" },
+    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "", SIGNUP_RATE_LIMIT: "100" },
     stdio: ["ignore", "ignore", "ignore"]
   });
   try {
@@ -102,11 +102,13 @@ async function run() {
     console.log("== brute force protection ==");
     {
       clientIp = 60;
+      const bruteTarget = jar();
+      await call(bruteTarget, "POST", "/api/auth/signup", { name: "Brute Target", email: "brute.target@example.com", password: "password123", role: "tenant", university: "University of Ibadan" });
       let lastStatus = 0;
       for (let i = 0; i < 35; i++) {
         const res = await fetch(`${BASE}/api/auth/login`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: "tenant@demo.test", password: `wrong-${i}` })
+          body: JSON.stringify({ email: "brute.target@example.com", password: `wrong-${i}` })
         });
         lastStatus = res.status;
         if (res.status === 429) break;
@@ -136,30 +138,37 @@ async function run() {
       const attacker = jar();
       await call(attacker, "POST", "/api/auth/signup", { name: "Attacker", email: "attacker@example.com", password: "password123", role: "tenant", university: "University of Ibadan" });
       const victim = jar();
-      await call(victim, "POST", "/api/auth/login", { email: "tenant@demo.test", password: "demo1234" });
+      await call(victim, "POST", "/api/auth/signup", { name: "IDOR Victim", email: "idor.victim@example.com", password: "password123", role: "tenant", university: "University of Ibadan" });
       const victimBootstrap = await call(victim, "GET", "/api/bootstrap");
       const victimId = victimBootstrap.payload.user.id;
+      globalThis.idorVictimIdGlobal = victimId;
+      const otherLandlord = jar();
+      await call(otherLandlord, "POST", "/api/auth/signup", { name: "IDOR Landlord", email: "idor.landlord@example.com", password: "password123", role: "landlord", university: "University of Ibadan" });
+      const victimListing = await call(otherLandlord, "POST", "/api/listings", { title: "IDOR Lodge", area: "Sango", university: "University of Ibadan", price: 150000, type: "Shared", bedrooms: 1, bathrooms: 1, description: "probe", amenities: [] });
+      const victimListingId = victimListing.payload.listing.id;
+      const contactRes = await call(victim, "POST", `/api/listings/${victimListingId}/contact`);
+      const probeConvoId = contactRes.payload.conversationId;
 
       const deleteOther = await call(attacker, "DELETE", "/api/account", { password: "password123" });
       check("attacker deleting account works only for self", deleteOther.status === 200);
 
       const attacker2 = jar();
       await call(attacker2, "POST", "/api/auth/signup", { name: "Attacker 2", email: "attacker2@example.com", password: "password123", role: "tenant", university: "University of Ibadan" });
-      const fakeListing = await call(attacker2, "PATCH", "/api/listings/lst_palm", { status: "hidden" });
+      const fakeListing = await call(attacker2, "PATCH", `/api/listings/${victimListingId}`, { status: "hidden" });
       check("attacker cannot modify someone else's listing (403)", fakeListing.status === 403);
-      const deleteOtherListing = await call(attacker2, "DELETE", "/api/listings/lst_palm");
+      const deleteOtherListing = await call(attacker2, "DELETE", `/api/listings/${victimListingId}`);
       check("attacker cannot delete someone else's listing (403)", deleteOtherListing.status === 403);
 
-      const anonMessage = await call(null, "GET", "/api/conversations/con_demo/messages");
+      const anonMessage = await call(null, "GET", `/api/conversations/${probeConvoId}/messages`);
       check("anonymous cannot read conversations (401)", anonMessage.status === 401);
-      const outsiderConvo = await call(attacker2, "GET", "/api/conversations/con_demo/messages");
+      const outsiderConvo = await call(attacker2, "GET", `/api/conversations/${probeConvoId}/messages`);
       check("non-member cannot read demo conversation (404)", outsiderConvo.status === 404);
 
       const web = await fetch(`${BASE}/api/payments/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: "charge.success", data: { reference: "x", amount: 1 } }) });
       check("unsigned webhook rejected (401)", web.status === 401);
 
       // Booking authorization probes
-      const victimBookingRes = await call(victim, "POST", "/api/bookings", { listingId: "lst_palm", splitCount: 1 });
+      const victimBookingRes = await call(victim, "POST", "/api/bookings", { listingId: victimListingId, splitCount: 1 });
       check("victim can create booking", victimBookingRes.status === 201);
       const victimBooking = victimBookingRes.payload.booking;
       const attackerCancel = await call(attacker2, "POST", `/api/bookings/${victimBooking.id}/cancel`);
@@ -214,14 +223,17 @@ async function run() {
       const anonBootstrap = await Promise.all(Array.from({ length: 60 }, () => fetch(`${BASE}/api/bootstrap`).then(r => r.status)));
       check("60 parallel bootstraps all 200", anonBootstrap.every(s => s === 200));
       const demo = jar();
-      await call(demo, "POST", "/api/auth/login", { email: "tenant@demo.test", password: "demo1234" });
+      await call(demo, "POST", "/api/auth/signup", { name: "Stress User", email: "stress.user@example.com", password: "password123", role: "tenant", university: "University of Ibadan" });
       const burst = await Promise.all(Array.from({ length: 40 }, () => call(demo, "GET", "/api/bootstrap")));
+      const stressContact = await call(demo, "POST", "/api/conversations/start", { userId: globalThis.idorVictimIdGlobal });
+      const stressConvoId = stressContact.payload.conversationId;
+      const stressConvoUrl = `/api/conversations/${stressConvoId}/messages`;
       check("40 parallel authenticated bootstraps all 200", burst.every(r => r.status === 200));
       const messages = await Promise.all(Array.from({ length: 12 }, (_, i) =>
-        call(demo, "POST", "/api/conversations/con_demo/messages", { text: `stress message ${i}` })
+        call(demo, "POST", stressConvoUrl, { text: `stress message ${i}` })
       ));
       check("parallel messages all accepted", messages.every(r => r.status === 201));
-      const convo = await call(demo, "GET", "/api/conversations/con_demo/messages");
+      const convo = await call(demo, "GET", stressConvoUrl);
       const stressTexts = convo.payload.messages.filter(m => m.text.startsWith("stress message ")).map(m => m.text);
       const unique = new Set(stressTexts);
       check("no lost or duplicated messages under burst", unique.size === 12, `saw ${unique.size}`);

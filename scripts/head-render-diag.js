@@ -12,19 +12,23 @@ const path = require("node:path");
 const appPath = process.argv[2] || path.join(__dirname, "..", "public", "app.js");
 const PORT = 4583;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "offkay-headdiag-"));
-const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
+const payloadFile = process.argv[3];
+const payload = payloadFile ? JSON.parse(fs.readFileSync(payloadFile, "utf8")) : {};
+const proc = payloadFile ? null : spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
   env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "" },
   stdio: "ignore"
 });
 
 setTimeout(async () => {
   try {
-    const login = await fetch(`http://127.0.0.1:${PORT}/api/auth/login`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: "tenant@demo.test", password: "demo1234" })
-    });
-    const cookie = login.headers.get("set-cookie") || "";
-    const payload = await (await fetch(`http://127.0.0.1:${PORT}/api/bootstrap`, { headers: { Cookie: cookie } })).json();
+    if (!payloadFile) {
+      const signup = await fetch(`http://127.0.0.1:${PORT}/api/auth/signup`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Diag User", email: `diag-${Date.now()}@example.com`, password: "password123", role: "tenant", university: "University of Lagos" })
+      });
+      const cookie = signup.headers.get("set-cookie") || "";
+      Object.assign(payload, await (await fetch(`http://127.0.0.1:${PORT}/api/bootstrap`, { headers: { Cookie: cookie } })).json());
+    }
     console.log("bootstrap payload user:", payload.user?.name);
 
     // Recording DOM: every innerHTML write is logged so we can see what rendered.
@@ -104,7 +108,7 @@ setTimeout(async () => {
     console.log("diag error:", e.message);
     process.exitCode = 1;
   } finally {
-    proc.kill("SIGKILL");
+    if (proc) proc.kill("SIGKILL");
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 }, 1500);

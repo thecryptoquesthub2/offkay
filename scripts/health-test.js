@@ -47,13 +47,13 @@ async function run() {
     console.log(`  unknown route: ${missing.status}`);
     if (missing.status !== 404) bail("unknown route should 404");
 
-    const login = await fetch(`${BASE}/api/auth/login`, {
+    const signup = await fetch(`${BASE}/api/auth/signup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: "tenant@demo.test", password: "demo1234" })
+      body: JSON.stringify({ name: "Health User", email: "health.user@example.com", password: "password123", role: "tenant", university: "University of Lagos" })
     });
-    console.log(`  demo login: ${login.status}`);
-    if (!login.ok) bail("demo login broken");
+    console.log(`  signup: ${signup.status}`);
+    if (!signup.ok) bail("signup broken");
     console.log("  FILE-MODE PASSED");
   } finally {
     proc.kill("SIGKILL");

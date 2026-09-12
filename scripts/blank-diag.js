@@ -16,9 +16,9 @@ const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], 
 
 setTimeout(async () => {
   try {
-    const login = await fetch(`http://127.0.0.1:${PORT}/api/auth/login`, {
+    const login = await fetch(`http://127.0.0.1:${PORT}/api/auth/signup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: "tenant@demo.test", password: "demo1234" })
+      body: JSON.stringify({ name: "Race Diag", email: `race-diag-${Date.now()}@example.com`, password: "password123", role: "tenant", university: "University of Lagos" })
     });
     const setCookie = login.headers.get("set-cookie") || "";
     const bootstrap = await fetch(`http://127.0.0.1:${PORT}/api/bootstrap`, { headers: { Cookie: setCookie } });

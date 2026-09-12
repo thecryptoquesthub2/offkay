@@ -7,7 +7,7 @@
   <meta name="description" content="Find verified student homes and compatible roommates near Nigerian universities.">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/app.css?v=6">
+  <link rel="stylesheet" href="/app.css?v=9">
   <title>Offkay</title>
 </head>
 <body>
@@ -46,27 +46,37 @@
           <label>Password<input name="password" type="password" autocomplete="current-password" placeholder="At least 8 characters" required></label>
           <button class="button primary wide" type="submit">Sign in <span>&rarr;</span></button>
           <button class="text-button" type="button" data-auth-mode="signup">New here? <b>Create an account</b></button>
-          <div class="demo-row">
-            <span>Try the prepared MVP:</span>
-            <button type="button" class="demo-login" data-demo="tenant">Tenant demo</button>
-            <button type="button" class="demo-login" data-demo="landlord">Landlord demo</button>
-          </div>
         </form>
 
-        <form id="signupForm" class="form-stack hidden">
-          <div class="role-picker">
-            <button type="button" class="role-option active" data-role="tenant"><span>&#9817;</span><b>I need a home</b><small>Tenant or student</small></button>
-            <button type="button" class="role-option" data-role="landlord"><span>&#8962;</span><b>I have a property</b><small>Landlord or agent</small></button>
+        <form id="signupForm" class="form-stack signup-stack hidden">
+          <span class="form-section-label">Account type</span>
+          <div class="account-type-picker" role="radiogroup" aria-label="Account type">
+            <button type="button" class="account-type-card active" data-role="tenant"><svg><use href="/offkay-icons.svg#pin"></use></svg><b>Looking for a home</b></button>
+            <button type="button" class="account-type-card" data-role="landlord"><svg><use href="/offkay-icons.svg#home"></use></svg><b>Listing a property</b></button>
           </div>
-          <div class="two-fields">
-            <label>Full name<input name="name" placeholder="Your full name" required></label>
-            <label>Phone number<input name="phone" type="tel" placeholder="0803 000 0000" required></label>
-          </div>
-          <label>Email address<input name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label>
-          <label>University<select name="university" id="signupUniversity" required></select></label>
-          <label>Password<input name="password" type="password" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" required></label>
           <input type="hidden" name="role" value="tenant">
-          <button class="button primary wide" type="submit">Create my account <span>&rarr;</span></button>
+
+          <span class="form-section-label">Your details</span>
+          <label class="field-label" for="su-name">Full name</label>
+          <input id="su-name" name="name" placeholder="Your full name" required>
+          <label class="field-label" for="su-phone">Phone number</label>
+          <input id="su-phone" name="phone" type="tel" autocomplete="tel" placeholder="0803 000 0000" required>
+          <label class="field-label" for="su-email">Email address</label>
+          <input id="su-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+          <div class="su-university-wrap" id="suUniversityWrap">
+            <label class="field-label" for="su-university">University</label>
+            <select id="su-university" name="university" required></select>
+          </div>
+
+          <span class="form-section-label">Security</span>
+          <label class="field-label" for="su-password">Password</label>
+          <div class="password-wrap">
+            <input id="su-password" name="password" type="password" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" required>
+            <button type="button" class="password-eye" data-action="toggle-password" aria-label="Show password">&#128065;</button>
+          </div>
+          <small class="password-hint">Use at least 8 characters.</small>
+
+          <button class="button primary wide" type="submit">Create my account</button>
           <button class="text-button" type="button" data-auth-mode="login">Already have an account? <b>Sign in</b></button>
         </form>
       </div>
@@ -83,7 +93,7 @@
       </div>
       <div class="top-actions">
         <button class="icon-button" id="notificationButton" aria-label="Notifications"><svg class="icon-svg"><use href="/offkay-icons.svg#bell"></use></svg><i></i><b class="count-badge notif-badge" hidden></b></button>
-        <button class="user-chip" data-tab="profile"><span class="avatar" id="topAvatar">AO</span><span><b id="topName">Amara</b><small id="topRole">Tenant</small></span><em>v</em></button>
+        <button class="user-chip" data-tab="profile"><span class="avatar" id="topAvatar"></span><span><b id="topName"></b><small id="topRole"></small></span><em>v</em></button>
       </div>
     </header>
 
@@ -93,7 +103,7 @@
         <button class="nav-item" data-tab="explore"><svg><use href="/offkay-icons.svg#pin"></use></svg><b>Explore</b></button>
         <button class="nav-item" data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b><i class="count-badge msg-badge" hidden></i></button>
         <button class="nav-item" data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Profile</b></button>
-        <button class="nav-item admin-only hidden"><svg><use href="/offkay-icons.svg#verified"></use></svg><b>Admin</b></button>
+        <button class="nav-item admin-only hidden"><svg><use href="/offkay-icons.svg#verified"></use></svg><b>Admin</b><i class="count-badge admin-badge" hidden></i></button>
       </nav>
       <div class="sidebar-card" id="sidebarCard">
         <span>Roommate Match</span>
@@ -116,12 +126,12 @@
       <button data-tab="explore"><svg><use href="/offkay-icons.svg#pin"></use></svg><b>Explore</b></button>
       <button data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b><i class="count-badge msg-badge" hidden></i></button>
       <button data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Profile</b><i class="count-badge notif-badge" hidden></i></button>
-      <button data-tab="admin" class="admin-only hidden"><svg><use href="/offkay-icons.svg#verified"></use></svg><b>Admin</b></button>
+      <button data-tab="admin" class="admin-only hidden"><svg><use href="/offkay-icons.svg#verified"></use></svg><b>Admin</b><i class="count-badge admin-badge" hidden></i></button>
     </nav>
   </div>
 
   <div id="modalRoot" class="modal-root" aria-live="polite"></div>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=7"></script>
+  <script src="/app.js?v=9"></script>
 </body>
 </html>

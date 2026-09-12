@@ -7,7 +7,7 @@ A working student-housing MVP with a direct account gate and four app tabs:
 - Messages
 - Profile
 
-It includes tenant and landlord roles, sign-up/sign-in, landlord-only property publishing with photo uploads, university filtering, approximate map mode, saved homes, roommate matching, messaging, inspection requests, private safety reports, split-payment booking, curated themes, and Paystack checkout payments with server-side verification (a demo confirmation flow runs when no Paystack key is configured).
+It includes tenant and landlord roles, sign-up/sign-in, landlord-only property publishing with photo uploads, university filtering, approximate map mode, saved homes, roommate matching, messaging, inspection requests, private safety reports, split-payment booking, curated themes, and Paystack checkout payments with server-side verification. With no Paystack key configured, payment confirmation runs in a clearly-labeled sandbox mode; with a live key, real Paystack checkout is used.
 
 ## Run locally
 
@@ -31,16 +31,11 @@ npm test
 node scripts/security-test.js
 ```
 
-## Demo accounts
-
-- Tenant: `tenant@demo.test` / `demo1234`
-- Landlord: `landlord@demo.test` / `demo1234`
-
 ## Data storage
 
 Set `MONGODB_URI` in the environment and all app state (users, sessions, listings, messages, bookings) persists to MongoDB Atlas; each collection is stored separately with stable natural keys. Without it, the app falls back to a local JSON file in `data/`, which is used by tests and local runs.
 
-On serverless hosting (Vercel), a missing `MONGODB_URI` is refused loudly: sign-up returns `503 — Offkay is not connected to a database, so new accounts cannot be saved…` instead of reporting a success it cannot keep (the old silent path produced "invalid credentials" on the next sign-in because each instance had its own throwaway data). Sign-in for the seeded demo accounts still works in that state. `GET /api/health` reports `storage: "ephemeral"` so you can detect the misconfiguration programmatically.
+On serverless hosting (Vercel), a missing `MONGODB_URI` is refused loudly: sign-up returns `503 — Offkay is not connected to a database, so new accounts cannot be saved…` instead of reporting a success it cannot keep (the old silent path produced "invalid credentials" on the next sign-in because each instance had its own throwaway data). `GET /api/health` reports `storage: "ephemeral"` so you can detect the misconfiguration programmatically.
 
 ## Payments
 
@@ -50,7 +45,7 @@ Payments run through Paystack checkout. Set `PAYSTACK_SECRET_KEY` in the environ
 
 The repository includes a Vercel serverless adapter for the API. Because serverless instances have an ephemeral filesystem, set these environment variables in Vercel (Project → Settings → Environment Variables) and redeploy:
 
-- `MONGODB_URI` — MongoDB Atlas connection string (required for persistence; without it every cold start re-seeds a fresh database)
+- `MONGODB_URI` — MongoDB Atlas connection string (required for persistence; a fresh deployment starts with an empty database, which is intentional — no demo content is seeded)
 - `PAYSTACK_SECRET_KEY` — enables real Paystack checkout (test or live key)
 
 ### Health check / DB diagnostics

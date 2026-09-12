@@ -236,87 +236,6 @@ function id(prefix) {
   return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
 }
 
-function seedDb() {
-  const landlordId = "usr_landlord_demo";
-  const tenantId = "usr_tenant_demo";
-  const zainabId = "usr_zainab_demo";
-  const now = new Date().toISOString();
-  return {
-    users: [
-      {
-        id: landlordId, name: "David Okonkwo", email: "landlord@demo.test",
-        password: hashPassword("demo1234"), role: "landlord", phone: "08030000001",
-        university: "University of Lagos", verified: true,
-        bio: "Property owner offering verified student accommodation near campus.",
-        createdAt: now
-      },
-      {
-        id: tenantId, name: "Amara Obi", email: "tenant@demo.test",
-        password: hashPassword("demo1234"), role: "tenant", phone: "08030000002",
-        university: "University of Lagos", verified: true,
-        bio: "Computer Science student. Quiet, tidy, and usually studying late.",
-        budget: 500000, habits: ["Very tidy","Night owl","Quiet home"], createdAt: now
-      },
-      {
-        id: zainabId, name: "Zainab Musa", email: "zainab@demo.test",
-        password: hashPassword("demo1234"), role: "tenant", phone: "08030000003",
-        university: "University of Lagos", verified: true,
-        bio: "Mass Communication student looking to split a two-bedroom apartment around Akoka.",
-        budget: 450000, habits: ["Very tidy","Night owl","Quiet home"], createdAt: now
-      }
-    ],
-    sessions: [],
-    listings: [
-      {
-        id:"lst_palm",ownerId:landlordId,title:"Palm Court Studio",university:"University of Lagos",
-        area:"Akoka, Lagos",price:450000,type:"Studio",bedrooms:1,bathrooms:1,
-        latitude:6.5158,longitude:3.3898,
-        description:"Bright self-contained studio with steady water, prepaid electricity, security, and an eight-minute walk to campus.",
-        amenities:["Steady water","Security","Prepaid meter","Wardrobe"],verified:true,status:"active",
-        accent:"emerald",createdAt:now
-      },
-      {
-        id:"lst_maple",ownerId:landlordId,title:"Maple Student Lodge",university:"University of Ibadan",
-        area:"Agbowo, Ibadan",price:380000,type:"Shared",bedrooms:2,bathrooms:2,
-        latitude:7.4433,longitude:3.9008,
-        description:"A calm two-bedroom apartment designed for two students, close to the main gate and daily transport.",
-        amenities:["Furnished","Wi-Fi ready","Fenced compound","Kitchen"],verified:true,status:"active",
-        accent:"amber",createdAt:now
-      },
-      {
-        id:"lst_green",ownerId:landlordId,title:"Green Nest En-suite",university:"University of Nigeria, Nsukka",
-        area:"Odenigwe, Nsukka",price:520000,type:"En-suite",bedrooms:1,bathrooms:1,
-        latitude:6.8683,longitude:7.4064,
-        description:"Private en-suite room in a newly renovated student building with generator backup and caretaker support.",
-        amenities:["Generator","Caretaker","Private bathroom","Parking"],verified:true,status:"active",
-        accent:"blue",createdAt:now
-      },
-      {
-        id:"lst_cedar",ownerId:landlordId,title:"Cedar House",university:"Obafemi Awolowo University",
-        area:"Road 7, Ile-Ife",price:410000,type:"Shared",bedrooms:2,bathrooms:1,
-        latitude:7.5180,longitude:4.5230,
-        description:"Spacious shared apartment on a quiet street with direct transport to campus.",
-        amenities:["Balcony","Kitchen","Water tank","Security"],verified:true,status:"active",
-        accent:"rose",createdAt:now
-      }
-    ],
-    saved: [{userId:tenantId,listingId:"lst_palm"}],
-    conversations: [
-      {id:"con_demo",memberIds:[tenantId,landlordId],listingId:"lst_palm",updatedAt:now,reads:{}}
-    ],
-    messages: [
-      {id:"msg_1",conversationId:"con_demo",senderId:landlordId,text:"Hello Amara, the studio is still available. Would you like to schedule a viewing?",createdAt:new Date(Date.now()-3600000).toISOString()},
-      {id:"msg_2",conversationId:"con_demo",senderId:tenantId,text:"Yes please. Is Saturday morning okay?",createdAt:new Date(Date.now()-3200000).toISOString()}
-    ],
-    bookings: [],
-    inspections: [],
-    reports: [],
-    verifications: [],
-    notifications: [],
-    connections: []
-  };
-}
-
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
   const derived = crypto.scryptSync(password, salt, 64).toString("hex");
   return `${salt}:${derived}`;
@@ -335,17 +254,20 @@ function ensureDb() {
   if (!fs.existsSync(DB_FILE)) {
     const initial = process.env.VERCEL && fs.existsSync(BUNDLED_DB_FILE)
       ? fs.readFileSync(BUNDLED_DB_FILE, "utf8").replace(/^\uFEFF/, "")
-      : JSON.stringify(seedDb(), null, 2);
+      : JSON.stringify(EMPTY_DB(), null, 2);
     fs.writeFileSync(DB_FILE, initial);
   }
 }
 
-// File-mode mirror of the Mongo "demoSeed_v2" state flag: marks that the
-// one-time demo seed already ran for this data directory so intentional
-// deletions stick. Persisted together with the seeded content.
-function seedFlagFile() { return path.join(DATA_DIR, "demo-seeded-v2"); }
-function readSeedFlag() { try { return fs.existsSync(seedFlagFile()); } catch { return true; } }
-function writeSeedFlag() { try { fs.writeFileSync(seedFlagFile(), new Date().toISOString()); } catch {}}
+// A brand-new file-mode database starts completely empty. Real data only.
+// (Test suites provision their own fixtures through the public API.)
+function EMPTY_DB() {
+  return {
+    users: [], sessions: [], listings: [], saved: [], conversations: [],
+    messages: [], bookings: [], inspections: [], reports: [],
+    verifications: [], notifications: [], connections: []
+  };
+}
 
 function readDb() {
   ensureDb();
@@ -363,12 +285,6 @@ function readDb() {
   db.notifications ||= [];
   db.connections ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
-  const demoCoords = { lst_palm:[6.5158,3.3898], lst_maple:[7.4433,3.9008], lst_green:[6.8683,7.4064], lst_cedar:[7.5180,4.5230] };
-  db.listings.forEach(listing => {
-    if (demoCoords[listing.id] && !listing.latitude && !listing.longitude) {
-      [listing.latitude, listing.longitude] = demoCoords[listing.id];
-    }
-  });
   db.bookings.forEach(booking => {
     if (!Array.isArray(booking.paymentShares) || booking.paymentShares.length !== booking.splitCount) {
       const base = Math.floor(booking.amount / booking.splitCount);
@@ -440,17 +356,6 @@ function classifyDbError(lastError) {
 async function loadDb() {
   if (!USE_MONGODB) {
     const db = readDb();
-    // Same one-time demo seed as Mongo mode, for an existing-but-emptied file DB.
-    if (process.env.OFFKAY_SEED_DEMO !== "0" && db.listings.length === 0 && !readSeedFlag()) {
-      const seed = seedDb();
-      const takenEmails = new Set(db.users.map(user => String(user.email || "").toLowerCase()));
-      seed.users = seed.users.filter(user => !takenEmails.has(user.email.toLowerCase()));
-      if (!seed.users.some(user => user.id === "usr_landlord_demo")) { seed.listings = []; seed.saved = []; seed.conversations = []; seed.messages = []; }
-      Object.assign(db, seed);
-      db.demoSeedMarked = true;
-      await persistDb(db);
-      console.log(`Database has no listings - seeded demo content (${seed.listings.length} listings, ${seed.users.length} demo accounts; one-time)`);
-    }
     ensureCoreAdminRoles(db);
     return db;
   }
@@ -510,29 +415,6 @@ async function loadDb() {
     connections: connections.map(({ _id, ...rest }) => rest)
   });
   ensureCoreAdminRoles(db);
-  // One-time Mongo seeding: a database with no listings at all gets the same
-  // demo content as file mode — demo accounts, four sample listings, and the
-  // starter conversation. The seed is PERSISTED IMMEDIATELY (a GET request
-  // would otherwise show the content once and lose it), then a permanent flag
-  // in the state collection prevents re-seeding after intentional deletion.
-  // Every demo record has a fixed id, so concurrent cold starts converge.
-  // Opt out entirely with OFFKAY_SEED_DEMO=0.
-  if (process.env.OFFKAY_SEED_DEMO !== "0" && db.listings.length === 0) {
-    const seedFlag = await database.collection("state").findOne({ _id: "demoSeed_v2" });
-    if (!seedFlag) {
-      const seed = seedDb();
-      const takenEmails = new Set(db.users.map(user => String(user.email || "").toLowerCase()));
-      seed.users = seed.users.filter(user => !takenEmails.has(user.email.toLowerCase()));
-      // Only seed the demo listings/conversation when the demo landlord exists
-      // to own them; never seed content pointing at a missing owner.
-      const landlordPresent = seed.users.some(user => user.id === "usr_landlord_demo");
-      if (!landlordPresent) { seed.listings = []; seed.saved = []; seed.conversations = []; seed.messages = []; }
-      Object.assign(db, seed);
-      await persistDb(db);
-      await database.collection("state").updateOne({ _id: "demoSeed_v2" }, { $set: { seededAt: new Date().toISOString() } }, { upsert: true });
-      console.log(`Database has no listings - seeded demo content (${seed.listings.length} listings, ${seed.users.length} demo accounts; one-time; set OFFKAY_SEED_DEMO=0 to disable)`);
-    }
-  }
   loadedKeys = snapshotKeys(db);
   return db;
 }
@@ -564,7 +446,6 @@ function snapshotKeys(db) {
 async function persistDb(db) {
   if (!USE_MONGODB) {
     await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
-    if (db.demoSeedMarked) { writeSeedFlag(); db.demoSeedMarked = false; }
     return;
   }
   const database = await mongoDb();
@@ -620,12 +501,6 @@ function readDbShape(db) {
   db.notifications ||= [];
   db.connections ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
-  const demoCoords = { lst_palm:[6.5158,3.3898], lst_maple:[7.4433,3.9008], lst_green:[6.8683,7.4064], lst_cedar:[7.5180,4.5230] };
-  db.listings.forEach(listing => {
-    if (demoCoords[listing.id] && !listing.latitude && !listing.longitude) {
-      [listing.latitude, listing.longitude] = demoCoords[listing.id];
-    }
-  });
   db.bookings.forEach(booking => {
     if (!Array.isArray(booking.paymentShares) || booking.paymentShares.length !== booking.splitCount) {
       const base = Math.floor(booking.amount / booking.splitCount);
@@ -1073,7 +948,7 @@ async function api(req, res, url) {
   }
 
   if (route === "/api/auth/signup" && method === "POST") {
-    if (!rateLimit(`ip:${ip}:signup`, 10, 3_600_000)) return error(res, 429, "Too many sign-up attempts from this network. Try again later.");
+    if (!rateLimit(`ip:${ip}:signup`, Number(process.env.SIGNUP_RATE_LIMIT || 10), 3_600_000)) return error(res, 429, "Too many sign-up attempts from this network. Try again later.");
     const body = await parseBody(req);
     const name = String(body.name || "").trim();
     const email = String(body.email || "").trim().toLowerCase();
@@ -1094,7 +969,7 @@ async function api(req, res, url) {
       // Never report a successful account creation when the write cannot
       // survive this request — that is what produces "invalid credentials"
       // on the next sign-in.
-      return error(res, 503, "Offkay is not connected to a database, so new accounts cannot be saved. The operator needs to set MONGODB_URI (see README > Database). Sign-in for existing seeded demo accounts still works on this instance.");
+      return error(res, 503, "Offkay is not connected to a database, so new accounts cannot be saved. The operator needs to set MONGODB_URI (see README > Database). ");
     }
     const university = universities.includes(body.university) ? body.university : universities[0];
     const newUser = {
@@ -1524,10 +1399,15 @@ async function api(req, res, url) {
   // ---- Lightweight badge poll: real unread counts, no render data ----
   if (route === "/api/badges" && method === "GET") {
     const account = requireUser(req,res,db); if (!account) return;
-    return json(res,200,{
+    const payload = {
       messages: unreadMessageTotal(db, account.id),
       notifications: db.notifications.filter(item => item.userId === account.id && !item.read).length
-    });
+    };
+    // Core admins also get the pending-verification count for the Admin badge.
+    if (isCoreAdmin(account)) {
+      payload.adminPending = db.verifications.filter(item => item.status === "manual_review" || item.status === "PENDING" || item.status === "pending").length;
+    }
+    return json(res,200,payload);
   }
 
   if (route === "/api/bookings" && method === "POST") {
@@ -1902,8 +1782,6 @@ const server = http.createServer(handler);
 if (require.main === module) {
   server.listen(PORT,HOST,()=>{
     console.log(`Offkay is running at http://${HOST}:${PORT}`);
-    console.log("Tenant demo: tenant@demo.test / demo1234");
-    console.log("Landlord demo: landlord@demo.test / demo1234");
   });
 }
 

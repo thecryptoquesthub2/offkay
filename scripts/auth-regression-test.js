@@ -98,8 +98,8 @@ async function main() {
       const esu = await call("POST", "/api/auth/signup", { name: "Ephemeral Probe", email: `eph${Date.now()}@example.com`, password, role: "tenant", university: "University of Lagos" });
       check("signup is REFUSED, not silently dropped (503)", esu.status === 503);
       check("refusal explains the missing MONGODB_URI (frontend shows it verbatim)", /cannot be saved/i.test(esu.payload.error || "") && /MONGODB_URI/i.test(esu.payload.error || ""));
-      const eli = await call("POST", "/api/auth/login", { email: "tenant@demo.test", password: "demo1234" });
-      check("existing seeded demo accounts still work on this instance", eli.status === 200);
+      const eli = await call("POST", "/api/auth/login", { email: "ephemeral-refused@example.com", password });
+      check("login after refused signup stays honest (401, no ghost account)", eli.status === 401);
     } finally {
       ephemeral.kill("SIGKILL");
     }
