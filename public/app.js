@@ -307,7 +307,8 @@ function consumeAuthQueryFlags() {
   const banner = (kind, text) => { showAuth(); setAuthMode("login"); showAuthBanner(kind, text); };
   if (authError) return banner("error", authError);
   if (resetDone) return banner("ok", "Password updated. Sign in with your new password.");
-  if (googleSuccess) return banner("ok", "Google sign-in complete. Finishing up...");
+  // Google sign-in success is silent: the session cookie is already set and
+  // the app bootstraps straight into the signed-in experience.
 }
 
 function toggleSignupUniversity(show) {
