@@ -1058,8 +1058,12 @@ function renderMessageList(messages) {
   const box = $("#chatMessages");
   if (!box) return;
   const stickToBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  const distanceFromBottom = box.scrollHeight - box.scrollTop;
   box.innerHTML = messages.map(message=>{const mine = message.senderId===state.user.id; const media = (message.attachments||[]).map(a=>attachmentMarkup(a, mine)).join(""); return `<div class="bubble ${mine?"mine":""}">${media}${message.text ? `<p>${esc(message.text)}</p>` : ""}<time>${time(message.createdAt)}</time></div>`;}).join("") || `<div class="no-chat">No messages yet. Say hello.</div>`;
-  box.scrollTop = stickToBottom ? box.scrollHeight : Math.min(box.scrollTop, box.scrollHeight);
+  // innerHTML resets scrollTop, so restore from the distance captured above:
+  // anchored to the newest message when following, or frozen on the exact
+  // history the user was reading when scrolled up.
+  box.scrollTop = stickToBottom ? box.scrollHeight : Math.max(0, box.scrollHeight - distanceFromBottom);
 }
 
 async function loadMessages(conversationId) {
