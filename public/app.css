@@ -508,6 +508,13 @@ button.roommate-avatar{border:0;color:white;font-weight:750;background:var(--pri
 .bubble .chat-media img{display:block;width:100%;height:180px;object-fit:cover}
 .bubble .chat-media video{display:block;width:100%;max-height:240px;border-radius:12px;background:#000}
 .image-viewer{position:fixed;inset:0;z-index:5;display:grid;place-items:center;padding:22px;background:rgba(5,18,14,.9);backdrop-filter:blur(6px);animation:imageIn .18s ease}
+/* Image-only messages: no bubble chrome - the photo IS the message. The
+   timestamp becomes a small translucent chip under the photo. */
+.bubble.media-only{background:transparent;padding:0;border-radius:12px;max-width:min(272px,86%)}
+.bubble.media-only .chat-media{margin:0}
+.bubble.media-only time{display:inline-block;margin:5px 0 0 auto;padding:3px 9px;border-radius:999px;background:rgba(10,25,20,.55);color:#fff;opacity:.9}
+/* Loading / empty placeholder fills the message area and centers. */
+.chat-messages .no-chat{flex:1 1 auto;align-self:stretch}
 .image-viewer img{max-width:min(94vw,900px);max-height:88svh;width:auto;height:auto;border-radius:14px;box-shadow:0 30px 80px rgba(0,0,0,.5)}
 .image-viewer-close{position:fixed;top:calc(14px + env(safe-area-inset-top));right:16px;width:44px;height:44px;border:0;border-radius:50%;background:rgba(255,255,255,.12);color:#fff;font-size:22px;display:grid;place-items:center}
 .image-viewer-close:hover{background:rgba(255,255,255,.22)}
@@ -653,7 +660,11 @@ select.filter-pill{padding-right:32px;background-image:url("data:image/svg+xml;c
   .content:has(#tab-messages.active){padding:0 0 40px;max-width:none}
 }
 @media(max-width:820px){
-  .content:has(#tab-messages.active){padding-bottom:calc(86px + env(safe-area-inset-bottom))}
+  /* Full-bleed on mobile: .app becomes a flex column so .content receives a
+     definite height to fill between the header and the viewport bottom; the
+     shell then stretches edge-to-edge with only bottom-nav clearance. */
+  .app:has(#tab-messages.active){display:flex;flex-direction:column}
+  .content:has(#tab-messages.active){flex:1 1 auto;display:flex;flex-direction:column;min-height:0;max-width:none;padding:0 0 calc(92px + env(safe-area-inset-bottom))}
   #tab-messages .message-shell{border-radius:0;border:0;box-shadow:none}
   .chat-head{padding:12px 14px;min-height:60px}
   .chat-messages{padding:16px 13px}

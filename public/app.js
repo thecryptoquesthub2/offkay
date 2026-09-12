@@ -1059,7 +1059,13 @@ function renderMessageList(messages) {
   if (!box) return;
   const stickToBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   const distanceFromBottom = box.scrollHeight - box.scrollTop;
-  box.innerHTML = messages.map(message=>{const mine = message.senderId===state.user.id; const media = (message.attachments||[]).map(a=>attachmentMarkup(a, mine)).join(""); return `<div class="bubble ${mine?"mine":""}">${media}${message.text ? `<p>${esc(message.text)}</p>` : ""}<time>${time(message.createdAt)}</time></div>`;}).join("") || `<div class="no-chat">No messages yet. Say hello.</div>`;
+  box.innerHTML = messages.map(message=>{
+    const mine = message.senderId===state.user.id;
+    const media = (message.attachments||[]).map(a=>attachmentMarkup(a, mine)).join("");
+    // Image-only messages render without bubble chrome (no green frame).
+    const mediaOnly = !message.text && (message.attachments||[]).some(a=>String(a.mime||"").startsWith("image/"));
+    return `<div class="bubble ${mine?"mine":""}${mediaOnly?" media-only":""}">${media}${message.text ? `<p>${esc(message.text)}</p>` : ""}<time>${time(message.createdAt)}</time></div>`;
+  }).join("") || `<div class="no-chat">No messages yet. Say hello.</div>`;
   // innerHTML resets scrollTop, so restore from the distance captured above:
   // anchored to the newest message when following, or frozen on the exact
   // history the user was reading when scrolled up.
