@@ -8,6 +8,7 @@
     "check": "node --check server.js && node --check public/app.js && node --check scripts/smoke-test.js && node --check scripts/ui-fix-test.js",
     "test": "node scripts/smoke-test.js && node scripts/social-test.js && node scripts/auth-flow-test.js && node scripts/ui-fix-test.js && node scripts/profile-messages-test.js",
     "test:security": "node scripts/security-test.js",
+    "test:adversarial": "node scripts/adversarial-test.js",
     "purge:dry-run": "node scripts/purge-demo-data.cjs",
     "purge:apply": "node scripts/purge-demo-data.cjs --apply",
     "test:health": "node scripts/health-test.js"
