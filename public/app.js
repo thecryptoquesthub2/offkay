@@ -558,7 +558,7 @@ function listingCard(listing, landlordMode = false) {
       ${photo ? `<img src="${photo}" alt="${esc(listing.title)}">` : ""}
       <div class="building"></div>
       <span class="verify-tag">${icon("verified")} ${listing.verified ? "Verified" : "Under review"}</span>
-      ${!mine && !landlordMode && listing.full ? `<span class="status-tag booked-tag">Fully booked</span>` : !mine && !landlordMode && listing.occupied > 0 ? `<span class="status-tag occupancy-tag">${listing.occupied}/${listing.capacity} booked</span>` : ""}
+      ${!mine && !landlordMode && listing.full ? `<span class="status-tag quiet-tag">Fully booked</span>` : ""}
       ${mine ? `<span class="status-tag">Your listing</span>`
         : landlordMode
           ? `<span class="status-tag">${esc(listing.status)}</span>`
@@ -566,12 +566,12 @@ function listingCard(listing, landlordMode = false) {
     </div>
     <div class="listing-info">
       <div class="listing-title-row"><h3>${esc(listing.title)}</h3></div>
+      <div class="listing-location">${esc(listing.area)} &middot; ${esc(listing.university)}</div>
       ${proximityChip(listing)}
-      <div class="listing-location">${icon("pin")} ${esc(listing.area)} &middot; ${esc(listing.university)}</div>
       <div class="listing-meta"><span>${listing.bedrooms} bed</span><span>${listing.bathrooms} bath</span><span>${esc(listing.type)}</span></div>
       <div class="listing-foot">
         <div class="listing-price">${money(listing.price)}<small>per academic year</small></div>
-        <button class="icon-more" data-action="${landlordMode ? "edit-listing" : "view-listing"}" data-id="${listing.id}" aria-label="Open property">&rarr;</button>
+        <span class="listing-open" aria-hidden="true">&rarr;</span>
       </div>
     </div>
   </article>`;
@@ -665,6 +665,52 @@ function filteredRoommates() {
   });
 }
 
+function peopleActiveFilters() {
+  const f = state.filters.people;
+  return Boolean(f.query.trim() || f.university || f.connected);
+}
+function homeActiveFilters() {
+  const f = state.filters.homes;
+  return Boolean(f.university || f.maxPrice || f.bedrooms || f.verified);
+}
+function roommateActiveFilters() {
+  const f = state.filters.roommates;
+  return Boolean(f.university || f.maxBudget || f.habit || f.verified);
+}
+function homeExtraFilterCount() {
+  const f = state.filters.homes;
+  return [f.university, f.maxPrice, f.bedrooms, f.verified ? "1" : ""].filter(Boolean).length;
+}
+function openAdvancedFilters() {
+  const f = state.filters.homes;
+  modal(`
+    <div class="modal-head"><div><span class="eyebrow">Filters</span><h2>Narrow your search</h2><p>Only applied to Homes browsing.</p></div><button class="close-button">&times;</button></div>
+    <div class="form-stack">
+      <label>Keyword<input data-filter="home-query" value="${esc(f.query)}" placeholder="Area, house name..."></label>
+      <label class="check-filter"><input type="checkbox" data-filter="home-verified" ${f.verified?"checked":""}><span>Verified only</span></label>
+      <div class="sheet-actions">
+        <button class="button subtle" data-action="reset-home-filters-sheet">Clear</button>
+        <button class="button primary" data-action="apply-advanced-filters">Show results</button>
+      </div>
+    </div>`);
+}
+async function loadPeople() {
+  if (state.people) return;
+  try { const data = await request("/api/people"); state.people = data.people || []; } catch { state.people = state.people || []; }
+}
+const EXPLORE_MODES = ["homes","map","roommates","people"];
+async function switchExploreMode(mode) {
+  if (!EXPLORE_MODES.includes(mode)) return;
+  state.exploreMode = mode;
+  if (mode === "people") await loadPeople();
+  renderExplore();
+}
+
+const HOME_TYPES = ["All","Studio","Shared","En-suite","Self-contained","Apartment"];
+const HABIT_OPTIONS = ["Very tidy","Night owl","Early bird","Quiet home","Social","Non-smoker","Cooks often","Pet friendly"];
+function selectFilter(name, current, options) {
+  return `<select class="filter-pill${current ? " set" : ""}" data-filter="${name}" aria-label="${name.replace(/-/g," ")}">${options}</select>`;
+}
 function renderExplore() {
   const items = filteredListings();
   const roommates = filteredRoommates();
@@ -673,37 +719,41 @@ function renderExplore() {
   const browsingPeople = state.exploreMode === "people";
   const homeFilters = state.filters.homes;
   const roommateFilters = state.filters.roommates;
-  const habitOptions = ["Very tidy","Night owl","Early bird","Quiet home","Social","Non-smoker","Cooks often","Pet friendly"];
-  $("#tab-explore").innerHTML = `
-    <div class="page-head"><div><span class="eyebrow">${hosting?"Host tools":"Explore Offkay"}</span><h1>${hosting?"Manage your places.":"Find a home, then find your people."}</h1><p>${hosting?"Review your properties and incoming inspection requests.":"Search verified homes and compatible roommates with filters made for each."}</p></div><div class="page-actions"><button class="button subtle" data-action="open-inspections">${icon("calendar")} Inspections</button>${hosting?`<button class="button primary" data-action="new-listing">${icon("plus")} Add a house</button>`:""}</div></div>
-    ${hosting ? "" : `<div class="liquid-segment" aria-label="Explore view"><button class="${state.exploreMode==="homes"?"active":""}" data-action="explore-mode" data-mode="homes">Homes</button><button class="${state.exploreMode==="map"?"active":""}" data-action="explore-mode" data-mode="map">Map</button><button class="${browsingRoommates?"active":""}" data-action="explore-mode" data-mode="roommates">Roommates</button><button class="${browsingPeople?"active":""}" data-action="explore-mode" data-mode="people">People</button></div>`}
+  const habitOptions = HABIT_OPTIONS;
+  $("#tab-explore").innerHTML = `<div class="explore-main">
+    ${hosting ? `<div class="page-head"><div><span class="eyebrow">Host tools</span><h1>Manage your places.</h1><p>Review your properties and incoming inspection requests.</p></div><div class="page-actions"><button class="button subtle" data-action="open-inspections">${icon("calendar")} Inspections</button><button class="button primary" data-action="new-listing">${icon("plus")} Add a house</button></div></div>` : `
+    <header class="explore-hero">
+      <span class="explore-eyebrow">Explore Offkay</span>
+      <h1>Find a home, then find your people.</h1>
+      <p>Search verified homes and compatible roommates.</p>
+      <label class="explore-search">
+        <span class="explore-search-icon" aria-hidden="true"><svg class="off-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg></span>
+        <input class="explore-input" data-filter="home-query" value="${esc(homeFilters.query)}" placeholder="Search homes, areas, or universities..." aria-label="Search homes, areas, or universities">
+        <button class="explore-search-action" type="button" data-action="open-inspections">${icon("calendar")}<span>Inspections</span></button>
+      </label>
+    </header>
+    <div class="liquid-segment" aria-label="Explore view"><button class="${state.exploreMode==="homes"?"active":""}" data-action="explore-mode" data-mode="homes">Homes</button><button class="${state.exploreMode==="map"?"active":""}" data-action="explore-mode" data-mode="map">Map</button><button class="${browsingRoommates?"active":""}" data-action="explore-mode" data-mode="roommates">Roommates</button><button class="${browsingPeople?"active":""}" data-action="explore-mode" data-mode="people">People</button></div>`}
     ${hosting ? `<div class="section-head"><div><h2>Your properties</h2><p>Published places and verification status. Hide or delete test listings when you are done.</p></div></div>${propertyTable(state.ownListings)}` : browsingPeople ? peopleSection() : browsingRoommates ? `
-      <div class="filter-panel glass">
-        <div class="filter-panel-head"><div><b>Find a roommate</b><small>Match by campus, budget, lifestyle, and verification.</small></div><button class="link-button" data-action="reset-roommate-filters">Clear</button></div>
-        <div class="filter-bar roommate-filter-bar">
-          <label class="filter-field"><span>&#8981;</span><input data-filter="roommate-query" value="${esc(roommateFilters.query)}" placeholder="Name or keyword"></label>
-          <label class="filter-field"><span>&#8982;</span><select data-filter="roommate-university"><option value="">All universities</option>${state.universities.map(name=>`<option value="${esc(name)}" ${roommateFilters.university===name?"selected":""}>${esc(name)}</option>`).join("")}</select></label>
-          <label class="filter-field"><span>&#8358;</span><select data-filter="roommate-budget"><option value="">Any budget</option><option value="300000" ${roommateFilters.maxBudget==="300000"?"selected":""}>Up to &#8358;300k</option><option value="500000" ${roommateFilters.maxBudget==="500000"?"selected":""}>Up to &#8358;500k</option><option value="750000" ${roommateFilters.maxBudget==="750000"?"selected":""}>Up to &#8358;750k</option></select></label>
-          <label class="filter-field"><span>&#9673;</span><select data-filter="roommate-habit"><option value="">Any lifestyle</option>${habitOptions.map(habit=>`<option value="${esc(habit)}" ${roommateFilters.habit===habit?"selected":""}>${esc(habit)}</option>`).join("")}</select></label>
-          <label class="check-filter"><input type="checkbox" data-filter="roommate-verified" ${roommateFilters.verified?"checked":""}><span>Verified only</span></label>
-        </div>
+      <div class="results-head mode-head"><div><b>Find a roommate</b><small>Match by campus, budget, and lifestyle.</small></div></div>
+      <div class="explore-filter-row">
+        ${selectFilter("roommate-university", roommateFilters.university, `<option value="">All universities</option>${state.universities.map(name=>`<option value="${esc(name)}" ${roommateFilters.university===name?"selected":""}>${esc(name)}</option>`).join("")}`)}
+        ${selectFilter("roommate-budget", roommateFilters.maxBudget, `<option value="">Any budget</option><option value="300000" ${roommateFilters.maxBudget==="300000"?"selected":""}>Up to &#8358;300k</option><option value="500000" ${roommateFilters.maxBudget==="500000"?"selected":""}>Up to &#8358;500k</option><option value="750000" ${roommateFilters.maxBudget==="750000"?"selected":""}>Up to &#8358;750k</option>`)}
+        ${selectFilter("roommate-habit", roommateFilters.habit, `<option value="">Any lifestyle</option>${habitOptions.map(habit=>`<option value="${esc(habit)}" ${roommateFilters.habit===habit?"selected":""}>${esc(habit)}</option>`).join("")}`)}
+        <button class="filter-pill toggle${roommateFilters.verified?" set":""}" data-action="toggle-roommate-verified" aria-pressed="${roommateFilters.verified}">${icon("verified")} Verified</button>
       </div>
-      <div class="section-head"><div><h2>${roommates.length} compatible ${roommates.length===1?"roommate":"roommates"}</h2><p>Profiles are shown only after a match is calculated. Open one to see the full profile or start a chat.</p></div></div>
+      <div class="results-head${roommateActiveFilters()?" has-active":""}"><div><b>${roommates.length} ${roommates.length===1?"roommate":"roommates"}</b><small>matched to your campus and budget</small></div>${roommateActiveFilters()?`<button class="link-button" data-action="reset-roommate-filters">Clear</button>`:""}</div>
       <div class="roommate-grid">${roommates.map(roommateCard).join("") || emptyState("No roommates match yet","Try widening a filter or update your own profile in Settings.")}</div>` : `
-      <div class="filter-panel glass">
-        <div class="filter-panel-head"><div><b>Search homes</b><small>Only reviewed places show a verified badge.</small></div><button class="link-button" data-action="reset-home-filters">Clear</button></div>
-        <div class="filter-bar home-filter-bar">
-          <label class="filter-field"><span>&#8981;</span><input data-filter="home-query" value="${esc(homeFilters.query)}" placeholder="Area, university, or house name"></label>
-          <label class="filter-field"><span>&#8982;</span><select data-filter="home-university"><option value="">All universities</option>${state.universities.map(name=>`<option value="${esc(name)}" ${homeFilters.university===name?"selected":""}>${esc(name)}</option>`).join("")}</select></label>
-          <label class="filter-field"><span>&#8358;</span><select data-filter="home-price"><option value="">Any budget</option><option value="300000" ${homeFilters.maxPrice==="300000"?"selected":""}>Under &#8358;300k</option><option value="500000" ${homeFilters.maxPrice==="500000"?"selected":""}>Under &#8358;500k</option><option value="750000" ${homeFilters.maxPrice==="750000"?"selected":""}>Under &#8358;750k</option></select></label>
-          <label class="filter-field"><span>&#8962;</span><select data-filter="home-bedrooms"><option value="">Any size</option><option value="1" ${homeFilters.bedrooms==="1"?"selected":""}>1+ bedroom</option><option value="2" ${homeFilters.bedrooms==="2"?"selected":""}>2+ bedrooms</option><option value="3" ${homeFilters.bedrooms==="3"?"selected":""}>3+ bedrooms</option></select></label>
-          <label class="check-filter"><input type="checkbox" data-filter="home-verified" ${homeFilters.verified?"checked":""}><span>Verified only</span></label>
-        </div>
-        <div class="filter-chips">${["All","Studio","Shared","En-suite","Self-contained","Apartment"].map(type=>`<button class="chip ${homeFilters.type===type?"active":""}" data-action="filter-type" data-type="${type}">${type}</button>`).join("")}</div>
+      <div class="explore-filter-row">
+        ${selectFilter("home-university", homeFilters.university, `<option value="">All universities</option>${state.universities.map(name=>`<option value="${esc(name)}" ${homeFilters.university===name?"selected":""}>${esc(name)}</option>`).join("")}`)}
+        ${selectFilter("home-price", homeFilters.maxPrice, `<option value="">Any budget</option><option value="300000" ${homeFilters.maxPrice==="300000"?"selected":""}>Under &#8358;300k</option><option value="500000" ${homeFilters.maxPrice==="500000"?"selected":""}>Under &#8358;500k</option><option value="750000" ${homeFilters.maxPrice==="750000"?"selected":""}>Under &#8358;750k</option>`)}
+        ${selectFilter("home-bedrooms", homeFilters.bedrooms, `<option value="">Any size</option><option value="1" ${homeFilters.bedrooms==="1"?"selected":""}>1+ bedroom</option><option value="2" ${homeFilters.bedrooms==="2"?"selected":""}>2+ bedrooms</option><option value="3" ${homeFilters.bedrooms==="3"?"selected":""}>3+ bedrooms</option>`)}
+        <button class="filter-pill toggle${homeFilters.verified?" set":""}" data-action="toggle-home-verified" aria-pressed="${homeFilters.verified}">${icon("verified")} Verified</button>
+        <button class="filter-pill" data-action="open-advanced-filters">Filters${homeExtraFilterCount() ? ` <b class="filter-pill-count">${homeExtraFilterCount()}</b>` : ""}</button>
       </div>
-      <div class="section-head"><div><h2>${items.length} ${items.length===1?"home":"homes"} available</h2><p>View the details, request an inspection, or save a home for later.</p></div></div>
+      <div class="filter-chips">${HOME_TYPES.map(type=>`<button class="chip ${homeFilters.type===type?"active":""}" data-action="filter-type" data-type="${type}">${type}</button>`).join("")}</div>
+      <div class="results-head${homeFilters.query||homeActiveFilters()?" has-active":""}"><div><b>${items.length} ${items.length===1?"home":"homes"}</b><small>verified places matching your search</small></div>${homeFilters.query||homeActiveFilters()?`<button class="link-button" data-action="reset-home-filters">Clear</button>`:""}</div>
       ${state.exploreMode==="map" ? mapCanvas(items) : `<div class="explore-list">${items.map(item=>listingCard(item)).join("") || emptyState("Nothing matches those filters","Try clearing a filter or selecting another university.")}</div>`}`}
-  `;
+  </div>`;
 }
 
 function listingCoords(item) {
@@ -805,15 +855,12 @@ function peopleSection() {
     return true;
   });
   return `
-    <div class="filter-panel glass">
-      <div class="filter-panel-head"><div><b>Discover people</b><small>Real Offkay members, closest matches first — same campus, shared habits, and budget overlap rank higher.</small></div><button class="link-button" data-action="reset-people-filters">Clear</button></div>
-      <div class="filter-bar people-filter-bar">
-        <label class="filter-field"><span>&#8981;</span><input data-filter="people-query" value="${esc(filters.query)}" placeholder="Name, bio, or lifestyle"></label>
-        <label class="filter-field"><span>&#8982;</span><select data-filter="people-university"><option value="">All universities</option>${state.universities.map(name=>`<option value="${esc(name)}" ${filters.university===name?"selected":""}>${esc(name)}</option>`).join("")}</select></label>
-        <label class="check-filter"><input type="checkbox" data-filter="people-connected" ${filters.connected?"checked":""}><span>Connections only</span></label>
-      </div>
+    <div class="explore-filter-row">
+      <input class="filter-pill filter-pill-input" data-filter="people-query" value="${esc(filters.query)}" placeholder="Search people..." aria-label="Search people">
+      ${selectFilter("people-university", filters.university, `<option value="">All universities</option>${state.universities.map(name=>`<option value="${esc(name)}" ${filters.university===name?"selected":""}>${esc(name)}</option>`).join("")}`)}
+      <button class="filter-pill toggle${filters.connected?" set":""}" data-action="toggle-people-connected" aria-pressed="${filters.connected}">Connections</button>
     </div>
-    <div class="section-head"><div><h2>${visible.length} ${visible.length===1?"person":"people"}</h2><p>Open a profile to see bio, lifestyle, and connection state.</p></div></div>
+    <div class="results-head${peopleActiveFilters()?" has-active":""}"><div><b>${visible.length} ${visible.length===1?"person":"people"}</b><small>open a profile to see bio, lifestyle, and connection state</small></div>${peopleActiveFilters()?`<button class="link-button" data-action="reset-people-filters">Clear</button>`:""}</div>
     <div class="people-directory">${visible.map(personCard).join("") || emptyState("No one matches yet","Try clearing a filter — new members appear here as they join Offkay.")}</div>`;
 }
 
@@ -833,6 +880,7 @@ function personCard(person) {
 }
 
 async function openUserProfile(id) {
+  closeModal();
   try {
     const data = await request(`/api/users/${encodeURIComponent(id)}`);
     const person = data.user;
@@ -2193,10 +2241,16 @@ function bindEvents() {
       toast(state.hostView ? "Host view enabled" : "Guest view enabled");
     }
     if (action==="set-theme") applyTheme(actionNode.dataset.theme);
-    if (action==="explore-mode") {state.exploreMode=actionNode.dataset.mode;renderExplore();}
+    if (action==="explore-mode") {switchExploreMode(actionNode.dataset.mode);}
     if (action==="finish-payment") {closeModal();switchTab("home");renderHome();toast("Booking confirmed");}
     if (action==="filter-type") {state.filters.homes.type=actionNode.dataset.type;renderExplore();}
     if (action==="reset-home-filters") {state.filters.homes={query:"",university:"",type:"All",maxPrice:"",bedrooms:"",verified:false};renderExplore();}
+    if (action==="reset-home-filters-sheet") {state.filters.homes={query:"",university:"",type:"All",maxPrice:"",bedrooms:"",verified:false};openAdvancedFilters();}
+    if (action==="apply-advanced-filters") {closeModal();renderExplore();}
+    if (action==="toggle-home-verified") {state.filters.homes.verified=!state.filters.homes.verified;renderExplore();}
+    if (action==="toggle-roommate-verified") {state.filters.roommates.verified=!state.filters.roommates.verified;renderExplore();}
+    if (action==="toggle-people-connected") {state.filters.people.connected=!state.filters.people.connected;renderExplore();}
+    if (action==="open-advanced-filters") {openAdvancedFilters();}
     if (action==="reset-roommate-filters") {state.filters.roommates={query:"",university:"",maxBudget:"",habit:"",verified:false};renderExplore();}
     if (action==="open-conversation") {state.activeConversation=id;renderMessages();}
     if (action==="back-to-conversations") {state.activeConversation=null;setChatPolling(null);renderMessages();}
@@ -2247,7 +2301,14 @@ function bindEvents() {
   });
   document.addEventListener("input",event=>{
     const filter = event.target.dataset.filter;
-    if(filter==="home-query") state.filters.homes.query=event.target.value;
+    if(filter==="home-query") {
+      state.filters.homes.query=event.target.value;
+      if(event.target.classList.contains("explore-input")) {
+        renderExplore();
+        const retry=document.querySelector(".explore-input");
+        if(retry){retry.focus();retry.setSelectionRange(retry.value.length,retry.value.length);}
+      }
+    }
     if(filter==="roommate-query") state.filters.roommates.query=event.target.value;
     if(filter==="people-query") { state.filters.people.query=event.target.value; renderExplore(); const retry=document.querySelector('[data-filter="people-query"]'); if(retry){retry.focus();retry.setSelectionRange(retry.value.length,retry.value.length);} }
     if(event.target.id==="conversationSearch"){
