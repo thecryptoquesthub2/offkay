@@ -811,41 +811,91 @@ async function sendMessage(event) {
 function renderProfile() {
   if (state.settingsView) return renderSettings();
   const tenant = state.user.role === "tenant";
-  const mine = state.listings.filter(item=>item.ownerId===state.user.id).length;
+  const hosting = canHost();
+  const savedCount = state.listings.filter(item=>item.saved).length;
+  const mine = state.ownListings.length;
   const paid = state.bookings.filter(item=>item.status==="paid").length;
+  const hostPaid = state.bookings.filter(item=>item.status==="paid" && state.ownListings.some(listing=>listing.id===item.listingId)).length;
+  const hostRequests = (state.inspections||[]).filter(item=>state.ownListings.some(listing=>listing.id===item.listingId)).length;
   const connections = (state.people || []).filter(item => item.connection?.state === "connected").length;
   const habits = ["Very tidy","Night owl","Early bird","Quiet home","Social","Non-smoker","Cooks often","Pet friendly"];
+  const chosenHabits = (state.user.habits || []).filter(habit => habits.includes(habit));
   $("#tab-profile").innerHTML = `
-    <div class="page-head"><div><span class="eyebrow">My profile</span><h1>Profile, trust & preferences</h1><p>Your public profile, verification, bookings, and account controls.</p></div><div class="page-actions"><button class="button subtle" data-action="open-settings">${icon("settings")} Settings</button></div></div>
-    <div class="profile-grid">
-      <aside class="profile-card glass">
+    <section class="profile-hero glass">
+      <div class="profile-hero-id">
         <span class="avatar large">${initials(state.user.name)}</span>
-        <h2>${esc(state.user.name)}</h2><p>${esc(state.user.email)}</p>
-        ${state.user ? verificationBadge(verificationState(), state.verification) : `<span class="verified-line">Signed out</span><button class="button primary small" data-action="goto-auth">Sign in</button>`}
-        <div class="profile-stats">
-          <div class="profile-stat"><b>${tenant?state.listings.filter(item=>item.saved).length:mine}</b><span>${tenant?"SAVED HOMES":"PROPERTIES"}</span></div>
-          <div class="profile-stat"><b>${paid}</b><span>CONFIRMED</span></div>
-          <div class="profile-stat"><b>${connections}</b><span>CONNECTIONS</span></div>
+        <div class="profile-hero-name">
+          <h1>${esc(state.user.name)}</h1>
+          <p>${esc(state.user.email)} &middot; ${hosting && !tenant ? "Host" : hosting ? "Host & tenant" : "Tenant"}</p>
+          ${verificationBadge(verificationState(), state.verification)}
         </div>
-        <div class="account-actions">
-          ${verificationPanel(verificationState(), state.verification)}
-          <button class="settings-row" data-action="open-verification">${icon("verified")}<span><b>Verification</b><small>${esc(verificationStatusLabel())}</small></span><em>&rarr;</em></button>
-          <button class="settings-row" data-action="open-settings">${icon("settings")}<span><b>Settings</b><small>Account, notifications, personalization, privacy</small></span><em>&rarr;</em></button>
-          ${state.user.isCoreAdmin ? `<button class="settings-row" data-action="goto-admin">${icon("verified")}<span><b>Admin dashboard</b><small>Verification queue, review, audit trail</small></span><em>&rarr;</em></button>` : ""}
-        </div>
-      </aside>
+      </div>
+      <button class="button subtle" data-action="open-settings">${icon("settings")} Settings</button>
+    </section>
+
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Trust &amp; verification</h2><p>${tenant?"Verified students get more roommate matches and can book faster.":"Verified hosts appear with a trust badge on every listing."}</p></div>
+      ${verificationPanel(verificationState(), state.verification)}
+    </section>
+
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Your activity</h2><p>Live numbers from your Offkay account.</p></div>
+      <div class="profile-stats">
+        ${tenant
+          ? `<div class="profile-stat"><b>${savedCount}</b><span>SAVED HOMES</span></div>
+             <div class="profile-stat"><b>${paid}</b><span>CONFIRMED</span></div>
+             <div class="profile-stat"><b>${connections}</b><span>CONNECTIONS</span></div>`
+          : `<div class="profile-stat"><b>${mine}</b><span>PROPERTIES</span></div>
+             <div class="profile-stat"><b>${hostPaid}</b><span>CONFIRMED</span></div>
+             <div class="profile-stat"><b>${hostRequests}</b><span>TOUR REQUESTS</span></div>`}
+      </div>
+    </section>
+
+    ${tenant ? `
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Roommate preferences</h2><p>What matching uses to pair you with compatible people.</p></div>
+      <div class="pref-card glass">
+        <div class="pref-line"><span>University</span><b>${esc(state.user.university || "Not set")}</b></div>
+        <div class="pref-line"><span>Annual budget</span><b>${state.user.budget ? money(state.user.budget) : "Not set"}</b></div>
+        ${chosenHabits.length ? `<div class="pref-habits">${chosenHabits.map(habit=>`<span class="pref-habit">${esc(habit)}</span>`).join("")}</div>` : `<p class="pref-empty">No lifestyle preferences yet — add a few so matching can find your people.</p>`}
+        <button class="button subtle small" data-action="focus-profile-form">Edit preferences</button>
+      </div>
+    </section>` : `
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Hosting</h2><p>Your published properties and incoming requests.</p></div>
+      <div class="pref-card glass">
+        <div class="pref-line"><span>Published properties</span><b>${mine}</b></div>
+        <div class="pref-line"><span>Tour requests received</span><b>${hostRequests}</b></div>
+        <div class="pref-line"><span>Confirmed bookings</span><b>${hostPaid}</b></div>
+        <button class="button subtle small" data-tab="home">${icon("home")} Manage properties</button>
+      </div>
+    </section>`}
+
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Profile details</h2><p>${tenant?"Your university, budget, and habits improve roommate recommendations.":"These details appear on your host profile."}</p></div>
       <form class="profile-form glass form-stack" id="profileForm">
-        <h2>Profile details</h2><p>${tenant?"Your university, budget, and habits improve roommate recommendations.":"These details appear on your host profile."}</p>
-        <div class="two-fields"><label>Full name<input name="name" value="${esc(state.user.name)}" required></label><label>Phone number<input name="phone" value="${esc(state.user.phone || "")}"></label></div>
+        <div class="two-fields"><label>Full name<input name="name" value="${esc(state.user.name)}" required></label><label>Phone number<input name="phone" type="tel" value="${esc(state.user.phone || "")}"></label></div>
         <label>University<select name="university">${state.universities.map(name=>`<option ${state.user.university===name?"selected":""}>${esc(name)}</option>`).join("")}</select></label>
         <label>About you<textarea name="bio" placeholder="${tenant?"Tell potential roommates a little about yourself":"Tell students about your experience and properties"}">${esc(state.user.bio || "")}</textarea></label>
-        ${tenant?`<label>Maximum annual budget<input name="budget" type="number" min="0" step="10000" value="${state.user.budget || ""}" placeholder="500000"></label>
+        ${tenant?`<label>Maximum annual budget<input name="budget" type="number" inputmode="numeric" min="0" step="10000" value="${state.user.budget || ""}" placeholder="500000"></label>
         <label>Lifestyle preferences<div class="habit-picker">${habits.map(habit=>`<button type="button" class="habit ${(state.user.habits||[]).includes(habit)?"selected":""}" data-action="toggle-habit" data-habit="${habit}">${habit}</button>`).join("")}</div></label>`:""}
         <button class="button primary" type="submit">Save profile changes</button>
       </form>
-    </div>
-    <div class="section-head"><div><h2>Bookings &amp; payments</h2><p>Every booking on your account and its payment state.</p></div></div>
-    ${bookingsList()}`;
+    </section>
+
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Bookings &amp; payments</h2><p>Every booking on your account and its payment state.</p></div>
+      ${bookingsList()}
+    </section>
+
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Account</h2><p>Verification, settings, and admin tools.</p></div>
+      <div class="settings-stack">
+        <button class="settings-row" data-action="open-verification">${icon("verified")}<span><b>Verification</b><small>${esc(verificationStatusLabel())}</small></span><em>&rarr;</em></button>
+        <button class="settings-row" data-action="open-settings">${icon("settings")}<span><b>Settings</b><small>Account, notifications, personalization, privacy</small></span><em>&rarr;</em></button>
+        ${state.user.isCoreAdmin ? `<button class="settings-row" data-action="goto-admin">${icon("verified")}<span><b>Admin dashboard</b><small>Verification queue, review, audit trail</small></span><em>&rarr;</em></button>` : ""}
+      </div>
+    </section>`;
   $("#profileForm").onsubmit = saveProfile;
 }
 
@@ -1695,6 +1745,7 @@ function bindEvents() {
     if (action==="back-to-profile") { state.settingsView = false; renderProfile(); }
     if (action==="back-to-profile-edit") { state.settingsView = false; renderProfile(); }
     if (action==="open-password") passwordSheet();
+    if (action==="focus-profile-form") { state.settingsView = false; renderProfile(); requestAnimationFrame(()=>{ const form=$("#profileForm"); if(form) form.scrollIntoView({behavior:"smooth",block:"center"}); }); }
     if (action==="open-connections") connectionsSheet();
     if (action==="open-terms") termsSheet();
     if (action==="logout-all-devices") logoutAllDevices();
