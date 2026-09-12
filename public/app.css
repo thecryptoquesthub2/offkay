@@ -645,7 +645,9 @@ select.filter-pill{padding-right:32px;background-image:url("data:image/svg+xml;c
    list scrolls, header/composer/bottom-nav stay locked.
    ========================================================================== */
 .content:has(#tab-messages.active){display:flex;flex-direction:column}
-#tab-messages{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}
+/* scoped to .active: an ID rule with display would override .tab{display:none}
+   and leak the Messages view onto every other tab. */
+#tab-messages.active{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}
 #tab-messages .message-shell{flex:1 1 auto;height:auto;min-height:0;width:100%;max-width:none;margin:0}
 @media(min-width:850px){
   .content:has(#tab-messages.active){padding:0 0 40px;max-width:none}

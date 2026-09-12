@@ -119,6 +119,12 @@ async function waitReady() {
     /* Issue 2: obsolete settingsSheet popup fully removed; one Settings impl. */
     check("issue 2: settingsSheet() removed from the bundle", !appSource.includes("settingsSheet"));
     check("issue 2: open-settings renders the Settings page (settingsView=true)", appSource.includes('action==="open-settings"') && appSource.includes("state.settingsView = true"));
+    /* Tab-visibility guard: a bare `#tab-x { display: ... }` ID rule would
+       outrank `.tab { display:none }` (specificity 1-0-0 vs 0-1-0) and leak a
+       single tab onto every screen. Any ID display rule MUST be .active-scoped. */
+    const cssSource = fs.readFileSync(path.join(__dirname, "..", "public", "app.css"), "utf8");
+    const bareTabIdDisplay = cssSource.match(/#tab-[\w-]+\{[^}]*display\s*:/g) || [];
+    check("tab visibility: no bare ID selector sets display (would override .tab hide)", bareTabIdDisplay.length === 0, bareTabIdDisplay.join(" | ").slice(0, 160));
     check("issue 2: renderProfile routes settingsView to renderSettings", appSource.includes("if (state.settingsView) return renderSettings();"));
 
     /* Issue 3: desktop sidebar Admin nav carries data-tab=admin like mobile. */
