@@ -49,7 +49,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer;color:inherit}bu
 .avatar{width:37px;height:37px;border-radius:13px;display:grid;place-items:center;background:linear-gradient(145deg,#d8f1e4,#b8deca);color:var(--green);font-weight:850;overflow:hidden}.avatar.large{width:78px;height:78px;border-radius:24px;font-size:24px}
 .avatar-img{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
 .roommate-avatar .avatar-img,.avatar.large .avatar-img{border-radius:inherit}
-.sidebar{grid-area:side;position:fixed;left:16px;top:106px;bottom:16px;width:218px;border-radius:24px;padding:14px;display:flex;flex-direction:column;z-index:20}.main-nav{display:grid;gap:6px}.nav-item{height:49px;border:0;border-radius:15px;background:transparent;display:grid;grid-template-columns:28px 1fr auto;align-items:center;text-align:left;padding:0 13px;color:#64736d}.nav-item span{font-size:18px}.nav-item b{font-size:13px}.nav-item i{font-style:normal;background:#e36d69;width:7px;height:7px;border-radius:50%}.nav-item.active{color:var(--green);background:rgba(13,122,86,.1)}
+.sidebar{grid-area:side;position:fixed;left:16px;top:106px;bottom:16px;width:218px;border-radius:24px;padding:14px;display:flex;flex-direction:column;z-index:20}.main-nav{display:grid;gap:6px}.nav-item{height:49px;border:0;border-radius:15px;background:transparent;display:grid;grid-template-columns:28px 1fr auto;align-items:center;text-align:left;padding:0 13px;color:#64736d}.nav-item span{font-size:18px}.nav-item b{font-size:13px}.nav-item i:not(.count-badge){font-style:normal;background:#e36d69;width:7px;height:7px;border-radius:50%}.nav-item.active{color:var(--green);background:rgba(13,122,86,.1)}
 .sidebar-card{margin-top:auto;border-radius:20px;padding:18px;background:linear-gradient(145deg,#0f7d59,#075139);color:white;overflow:hidden;position:relative}.sidebar-card:after{content:"";position:absolute;width:100px;height:100px;border-radius:50%;background:rgba(255,255,255,.1);right:-40px;top:-35px}.sidebar-card span{font-size:10px;text-transform:uppercase;letter-spacing:.08em;opacity:.72}.sidebar-card strong{display:block;font-size:15px;line-height:1.35;margin:8px 0 14px}.logout-link{border:0;background:transparent;padding:14px;color:var(--muted);text-align:left;font-weight:700;font-size:12px}.logout-link:hover{color:var(--danger)}
 .content{grid-area:main;padding:32px 32px 90px 14px;min-width:0}.tab{display:none;animation:tabIn .3s ease}.tab.active{display:block}@keyframes tabIn{from{opacity:0;transform:translateY(6px)}}
 .page-head{display:flex;align-items:end;justify-content:space-between;gap:18px;margin-bottom:24px}.page-head h1{font-size:38px;letter-spacing:-.05em;margin:8px 0 6px}.page-head p{margin:0;color:var(--muted)}.page-actions{display:flex;gap:9px}
@@ -280,7 +280,8 @@ button.roommate-avatar{border:0;color:white;font-weight:750;background:var(--pri
 .count-badge{position:absolute;z-index:3;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:var(--conversion);color:#1A202C;font:800 10px/17px var(--font-ui);font-style:normal;text-align:center;white-space:nowrap}
 .nav-item{position:relative}
 .msg-badge{position:absolute;top:7px;right:10px}
-.admin-badge{top:7px;right:10px}
+.admin-badge{top:50%;transform:translateY(-50%);right:12px}
+.nav-item .count-badge:not([hidden]){display:inline-flex;align-items:center;justify-content:center;width:auto;min-width:17px;height:17px}
 .nav-item .count-badge,.nav-item .count-badge[hidden]{display:none}
 .nav-item .count-badge:not([hidden]){display:block}
 .bottom-nav button{position:relative}
@@ -322,17 +323,25 @@ button.roommate-avatar{border:0;color:white;font-weight:750;background:var(--pri
 .terms-body h3{margin:16px 0 6px;font-size:14px}
 .terms-body p{margin:0;color:var(--text-secondary);font-size:13px;line-height:1.6}
 /* ---- Core admin dashboard ---------------------------------------------- */
-.admin-queue,.admin-history{display:grid;gap:8px}
-.admin-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--border);border-radius:16px;background:var(--surface)}
+.admin-section{border-radius:24px;padding:18px;display:grid;gap:8px;margin-top:14px;min-width:0}
+.admin-section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 2px 8px}
+.admin-section-head h2{margin:0;font-size:18px;letter-spacing:-.03em}
+.admin-section-head p{margin:3px 0 0;color:var(--text-secondary);font-size:12px}
+.admin-count-pill{flex:0 0 auto;padding:5px 11px;border-radius:999px;background:var(--secondary);color:var(--primary);font-size:11px;font-weight:750;white-space:nowrap}
+.admin-queue,.admin-history{display:grid;gap:8px;min-width:0}
+.admin-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--border);border-radius:16px;background:var(--surface);min-width:0;overflow:hidden}
 .admin-row.rejected{border-color:color-mix(in srgb,var(--danger) 32%,transparent)}
 .admin-row .admin-date{color:var(--text-secondary,var(--muted));font-size:11px;white-space:nowrap}
-.admin-row .admin-by{text-align:right}
+.admin-row .admin-by{text-align:right;min-width:0}
+.admin-row .admin-by span{max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.admin-row .status-tag{flex:0 0 auto;justify-self:center}
 .admin-row .admin-by span{display:block;font-size:11px;color:var(--text-secondary,var(--muted))}
 .admin-row .verify-reason{grid-column:1/-1;font-size:11px;color:var(--text-secondary,var(--muted))}
 .admin-docs{display:flex;gap:9px;flex-wrap:wrap;margin:4px 0 2px}
+.status-tag.pending{background:#fff2d8;color:var(--amber)}
 .status-tag.ok{background:color-mix(in srgb,var(--success) 16%,white);color:var(--success)}
 .status-tag.rejected{background:color-mix(in srgb,var(--danger) 14%,white);color:var(--danger)}
-@media(max-width:720px){.admin-row{grid-template-columns:minmax(0,1fr) auto;grid-auto-rows:auto}.admin-row .admin-by{text-align:left;grid-column:1/-1}}
+@media(max-width:720px){.admin-row{grid-template-columns:minmax(0,1fr) auto;grid-auto-rows:auto}.admin-row .admin-by{text-align:left;grid-column:1/-1}.admin-section{padding:15px 13px}.admin-section-head{flex-wrap:wrap}}
 
 /* ---- Verification states ------------------------------------------------ */
 .verified-line.pending{background:#fff2d8;color:var(--amber)}

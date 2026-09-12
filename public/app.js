@@ -1556,8 +1556,9 @@ async function renderAdmin() {
       <div class="metric"><span class="metric-icon">&#10003;</span><div><small>Reviews recorded</small><strong>${events.length}</strong></div></div>
       <div class="metric"><span class="metric-icon">&#9825;</span><div><small>Total users</small><strong>${overview.stats?.users ?? "—"}</strong></div></div>
     </div>
-    <div class="section-head"><h2>Verification queue</h2><p>Open a submission to view documents and approve or reject.</p></div>
-    ${pending.length ? `<div class="admin-queue">${pending.map(item => `
+    <div class="admin-section glass">
+      <div class="admin-section-head"><div><h2>Verification queue</h2><p>Open a submission to view documents and approve or reject.</p></div><span class="admin-count-pill">${pending.length} waiting</span></div>
+      ${pending.length ? `<div class="admin-queue">${pending.map(item => `
       <div class="admin-row">
         <button class="person-main" data-action="admin-review" data-id="${item.id}">
           <span class="avatar">${avatarHtml(item.applicantName, item.applicantAvatarUrl)}</span>
@@ -1567,14 +1568,17 @@ async function renderAdmin() {
         <span class="status-tag pending">PENDING</span>
         <button class="button primary small" data-action="admin-review" data-id="${item.id}">Review</button>
       </div>`).join("")}</div>` : emptyState("Queue is clear", "No verification submissions are waiting for review.")}
-    <div class="section-head"><h2>Verification history</h2><p>Every approval and rejection, with the administrator who performed it.</p></div>
-    ${events.length ? `<div class="admin-history">${events.map(event => `
+    </div>
+    <div class="admin-section glass">
+      <div class="admin-section-head"><div><h2>Verification history</h2><p>Every approval and rejection, with the administrator who performed it.</p></div><span class="admin-count-pill">${events.length} recorded</span></div>
+      ${events.length ? `<div class="admin-history">${events.map(event => `
       <div class="admin-row ${event.decision === "rejected" ? "rejected" : ""}">
         <span class="conversation-text"><b>${esc(event.userName)}</b><span>${esc(event.userEmail)}</span></span>
         <span class="status-tag ${event.decision === "approved" ? "ok" : "rejected"}">${event.decision === "approved" ? "VERIFIED" : "REJECTED"}</span>
         <span class="conversation-text admin-by"><span>by ${esc(event.reviewedByName)}</span><span>${new Date(event.reviewedAt).toLocaleString()}</span></span>
         ${event.reason ? `<span class="verify-reason">Reason: ${esc(event.reason)}</span>` : ""}
-      </div>`).join("")}</div>` : emptyState("No reviews yet", "Approvals and rejections will appear here.")}`;
+      </div>`).join("")}</div>` : emptyState("No reviews yet", "Approvals and rejections will appear here.")}
+    </div>`;
 }
 
 async function adminReviewSheet(verificationId) {
