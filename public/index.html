@@ -7,13 +7,17 @@
   <meta name="description" content="Find verified student homes and compatible roommates near Nigerian universities.">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/app.css?v=5">
+  <link rel="stylesheet" href="/app.css?v=7">
   <title>Offkay</title>
 </head>
 <body>
   <div class="ambient" aria-hidden="true"><i></i><i></i><i></i></div>
 
-  <section id="authScreen" class="auth-screen">
+  <!-- Boot splash: shown while the session is being restored, so a refresh
+       never flashes the sign-in page for signed-in users. -->
+  <div id="bootSplash" class="boot-splash" aria-hidden="true"><span class="boot-mark">offkay</span></div>
+
+  <section id="authScreen" class="auth-screen hidden">
     <div class="auth-brand">
       <a class="brand" href="#"><span class="brand-mark">&#8962;</span><span>Offkay</span></a>
       <div class="auth-story">
@@ -131,7 +135,7 @@
     </div>
   </section>
 
-  <div id="app" class="app hidden">
+  <div id="app" class="app hidden" hidden>
     <header class="topbar glass">
       <a class="brand" href="#" data-tab="home"><img class="brand-logo" src="/offkay-mark.png" alt=""><span>offkay</span></a>
       <div class="top-search">
@@ -140,7 +144,7 @@
         <kbd>Ctrl K</kbd>
       </div>
       <div class="top-actions">
-        <button class="icon-button" id="notificationButton" aria-label="Notifications">&#9826;<i></i><b class="count-badge notif-badge" hidden></b></button>
+        <button class="icon-button" id="notificationButton" aria-label="Notifications"><svg class="icon-svg"><use href="/offkay-icons.svg#bell"></use></svg><i></i><b class="count-badge notif-badge" hidden></b></button>
         <button class="user-chip" data-tab="profile"><span class="avatar" id="topAvatar">AO</span><span><b id="topName">Amara</b><small id="topRole">Tenant</small></span><em>v</em></button>
       </div>
     </header>
@@ -151,6 +155,7 @@
         <button class="nav-item" data-tab="explore"><svg><use href="/offkay-icons.svg#pin"></use></svg><b>Explore</b></button>
         <button class="nav-item" data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b><i class="count-badge msg-badge" hidden></i></button>
         <button class="nav-item" data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Profile</b></button>
+        <button class="nav-item admin-only hidden"><svg><use href="/offkay-icons.svg#verified"></use></svg><b>Admin</b></button>
       </nav>
       <div class="sidebar-card" id="sidebarCard">
         <span>Roommate Match</span>
@@ -165,6 +170,7 @@
       <section id="tab-explore" class="tab"></section>
       <section id="tab-messages" class="tab"></section>
       <section id="tab-profile" class="tab"></section>
+      <section id="tab-admin" class="tab"></section>
     </main>
 
     <nav class="bottom-nav glass" aria-label="Mobile navigation">
@@ -172,11 +178,12 @@
       <button data-tab="explore"><svg><use href="/offkay-icons.svg#pin"></use></svg><b>Explore</b></button>
       <button data-tab="messages"><svg><use href="/offkay-icons.svg#messages"></use></svg><b>Messages</b><i class="count-badge msg-badge" hidden></i></button>
       <button data-tab="profile"><svg><use href="/offkay-icons.svg#user"></use></svg><b>Profile</b><i class="count-badge notif-badge" hidden></i></button>
+      <button data-tab="admin" class="admin-only hidden"><svg><use href="/offkay-icons.svg#verified"></use></svg><b>Admin</b></button>
     </nav>
   </div>
 
   <div id="modalRoot" class="modal-root" aria-live="polite"></div>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=4"></script>
+  <script src="/app.js?v=8"></script>
 </body>
 </html>

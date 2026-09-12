@@ -344,14 +344,23 @@ function populateUniversities() {
   if (select) select.innerHTML = list.map(name => `<option>${esc(name)}</option>`).join("");
 }
 
+function removeBootSplash() {
+  const splash = $("#bootSplash");
+  if (splash) splash.remove();
+}
+
 function showAuth() {
+  removeBootSplash();
   $("#authScreen").classList.remove("hidden");
   $("#app").classList.add("hidden");
+  $("#app").hidden = true;
 }
 
 function enterApp() {
+  removeBootSplash();
   $("#authScreen").classList.add("hidden");
   $("#app").classList.remove("hidden");
+  $("#app").hidden = false;
   $("#topAvatar").textContent = initials(state.user.name);
   $("#topName").textContent = firstName(state.user.name);
   $("#topRole").textContent = inHostView() ? "Host" : "Guest";
@@ -365,12 +374,12 @@ function enterApp() {
 
 function renderNotificationDot() {
   const messageCount = Number(state.unreadMessages) || unreadTotal();
-  $(".msg-badge").forEach(node => {
+  $$(".msg-badge").forEach(node => {
     node.textContent = messageCount > 99 ? "99+" : String(messageCount);
     node.hidden = messageCount === 0;
   });
   const notifCount = Number(state.notificationsUnread) || 0;
-  $(".notif-badge").forEach(node => {
+  $$(".notif-badge").forEach(node => {
     node.textContent = notifCount > 99 ? "99+" : String(notifCount);
     node.hidden = notifCount === 0;
   });
@@ -465,19 +474,31 @@ function renderAll() {
   renderExplore();
   renderMessages();
   renderProfile();
+  renderAdminVisibility();
   switchTab(state.activeTab, false);
+}
+
+/* Admin tab is only rendered when the SERVER says this account is a core
+   admin (state.user.isCoreAdmin comes from the bootstrap payload). This is
+   UI convenience, not authorization — every admin API call is re-verified
+   server-side. */
+function renderAdminVisibility() {
+  const isAdmin = Boolean(state.user && state.user.isCoreAdmin);
+  $$(".admin-only").forEach(node => node.classList.toggle("hidden", !isAdmin));
+  if (!isAdmin && state.activeTab === "admin") state.activeTab = "home";
 }
 
 function switchTab(tab, render = true) {
   if (tab !== "profile") state.settingsView = false;
   state.activeTab = tab;
   $$(".tab").forEach(node => node.classList.toggle("active", node.id === `tab-${tab}`));
-  $("[data-tab]").forEach(node => node.classList.toggle("active", node.dataset.tab === tab));
+  $$("[data-tab]").forEach(node => node.classList.toggle("active", node.dataset.tab === tab));
   if (render) {
     if (tab === "messages") renderMessages();
     if (tab === "explore") renderExplore();
     if (tab === "profile") renderProfile();
     if (tab === "home") renderHome();
+    if (tab === "admin") renderAdmin();
   }
   window.scrollTo({top:0,behavior:"smooth"});
 }
@@ -906,40 +927,91 @@ async function sendMessage(event) {
 function renderProfile() {
   if (state.settingsView) return renderSettings();
   const tenant = state.user.role === "tenant";
-  const mine = state.listings.filter(item=>item.ownerId===state.user.id).length;
+  const hosting = canHost();
+  const savedCount = state.listings.filter(item=>item.saved).length;
+  const mine = state.ownListings.length;
   const paid = state.bookings.filter(item=>item.status==="paid").length;
+  const hostPaid = state.bookings.filter(item=>item.status==="paid" && state.ownListings.some(listing=>listing.id===item.listingId)).length;
+  const hostRequests = (state.inspections||[]).filter(item=>state.ownListings.some(listing=>listing.id===item.listingId)).length;
   const connections = (state.people || []).filter(item => item.connection?.state === "connected").length;
   const habits = ["Very tidy","Night owl","Early bird","Quiet home","Social","Non-smoker","Cooks often","Pet friendly"];
+  const chosenHabits = (state.user.habits || []).filter(habit => habits.includes(habit));
   $("#tab-profile").innerHTML = `
-    <div class="page-head"><div><span class="eyebrow">My profile</span><h1>Profile, trust & preferences</h1><p>Your public profile, verification, bookings, and account controls.</p></div><div class="page-actions"><button class="button subtle" data-action="open-settings">${icon("settings")} Settings</button></div></div>
-    <div class="profile-grid">
-      <aside class="profile-card glass">
+    <section class="profile-hero glass">
+      <div class="profile-hero-id">
         <span class="avatar large">${initials(state.user.name)}</span>
-        <h2>${esc(state.user.name)}</h2><p>${esc(state.user.email)}</p>
-        ${state.user ? verificationBadge(verificationState(), state.verification) : `<span class="verified-line">Signed out</span><button class="button primary small" data-action="goto-auth">Sign in</button>`}
-        <div class="profile-stats">
-          <div class="profile-stat"><b>${tenant?state.listings.filter(item=>item.saved).length:mine}</b><span>${tenant?"SAVED HOMES":"PROPERTIES"}</span></div>
-          <div class="profile-stat"><b>${paid}</b><span>CONFIRMED</span></div>
-          <div class="profile-stat"><b>${connections}</b><span>CONNECTIONS</span></div>
+        <div class="profile-hero-name">
+          <h1>${esc(state.user.name)}</h1>
+          <p>${esc(state.user.email)} &middot; ${hosting && !tenant ? "Host" : hosting ? "Host & tenant" : "Tenant"}</p>
+          ${verificationBadge(verificationState(), state.verification)}
         </div>
-        <div class="account-actions">
-          ${verificationPanel(verificationState(), state.verification)}
-          <button class="settings-row" data-action="open-verification">${icon("verified")}<span><b>Verification</b><small>${esc(verificationStatusLabel())}</small></span><em>&rarr;</em></button>
-          <button class="settings-row" data-action="open-settings">${icon("settings")}<span><b>Settings</b><small>Account, notifications, personalization, privacy</small></span><em>&rarr;</em></button>
-        </div>
-      </aside>
+      </div>
+      <button class="button subtle" data-action="open-settings">${icon("settings")} Settings</button>
+    </section>
+
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Trust &amp; verification</h2><p>${tenant?"Verified students get more roommate matches and can book faster.":"Verified hosts appear with a trust badge on every listing."}</p></div>
+      ${verificationPanel(verificationState(), state.verification)}
+    </section>
+
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Your activity</h2><p>Live numbers from your Offkay account.</p></div>
+      <div class="profile-stats">
+        ${tenant
+          ? `<div class="profile-stat"><b>${savedCount}</b><span>SAVED HOMES</span></div>
+             <div class="profile-stat"><b>${paid}</b><span>CONFIRMED</span></div>
+             <div class="profile-stat"><b>${connections}</b><span>CONNECTIONS</span></div>`
+          : `<div class="profile-stat"><b>${mine}</b><span>PROPERTIES</span></div>
+             <div class="profile-stat"><b>${hostPaid}</b><span>CONFIRMED</span></div>
+             <div class="profile-stat"><b>${hostRequests}</b><span>TOUR REQUESTS</span></div>`}
+      </div>
+    </section>
+
+    ${tenant ? `
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Roommate preferences</h2><p>What matching uses to pair you with compatible people.</p></div>
+      <div class="pref-card glass">
+        <div class="pref-line"><span>University</span><b>${esc(state.user.university || "Not set")}</b></div>
+        <div class="pref-line"><span>Annual budget</span><b>${state.user.budget ? money(state.user.budget) : "Not set"}</b></div>
+        ${chosenHabits.length ? `<div class="pref-habits">${chosenHabits.map(habit=>`<span class="pref-habit">${esc(habit)}</span>`).join("")}</div>` : `<p class="pref-empty">No lifestyle preferences yet — add a few so matching can find your people.</p>`}
+        <button class="button subtle small" data-action="focus-profile-form">Edit preferences</button>
+      </div>
+    </section>` : `
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Hosting</h2><p>Your published properties and incoming requests.</p></div>
+      <div class="pref-card glass">
+        <div class="pref-line"><span>Published properties</span><b>${mine}</b></div>
+        <div class="pref-line"><span>Tour requests received</span><b>${hostRequests}</b></div>
+        <div class="pref-line"><span>Confirmed bookings</span><b>${hostPaid}</b></div>
+        <button class="button subtle small" data-tab="home">${icon("home")} Manage properties</button>
+      </div>
+    </section>`}
+
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Profile details</h2><p>${tenant?"Your university, budget, and habits improve roommate recommendations.":"These details appear on your host profile."}</p></div>
       <form class="profile-form glass form-stack" id="profileForm">
-        <h2>Profile details</h2><p>${tenant?"Your university, budget, and habits improve roommate recommendations.":"These details appear on your host profile."}</p>
-        <div class="two-fields"><label>Full name<input name="name" value="${esc(state.user.name)}" required></label><label>Phone number<input name="phone" value="${esc(state.user.phone || "")}"></label></div>
+        <div class="two-fields"><label>Full name<input name="name" value="${esc(state.user.name)}" required></label><label>Phone number<input name="phone" type="tel" value="${esc(state.user.phone || "")}"></label></div>
         <label>University<select name="university">${state.universities.map(name=>`<option ${state.user.university===name?"selected":""}>${esc(name)}</option>`).join("")}</select></label>
         <label>About you<textarea name="bio" placeholder="${tenant?"Tell potential roommates a little about yourself":"Tell students about your experience and properties"}">${esc(state.user.bio || "")}</textarea></label>
-        ${tenant?`<label>Maximum annual budget<input name="budget" type="number" min="0" step="10000" value="${state.user.budget || ""}" placeholder="500000"></label>
+        ${tenant?`<label>Maximum annual budget<input name="budget" type="number" inputmode="numeric" min="0" step="10000" value="${state.user.budget || ""}" placeholder="500000"></label>
         <label>Lifestyle preferences<div class="habit-picker">${habits.map(habit=>`<button type="button" class="habit ${(state.user.habits||[]).includes(habit)?"selected":""}" data-action="toggle-habit" data-habit="${habit}">${habit}</button>`).join("")}</div></label>`:""}
         <button class="button primary" type="submit">Save profile changes</button>
       </form>
-    </div>
-    <div class="section-head"><div><h2>Bookings &amp; payments</h2><p>Every booking on your account and its payment state.</p></div></div>
-    ${bookingsList()}`;
+    </section>
+
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Bookings &amp; payments</h2><p>Every booking on your account and its payment state.</p></div>
+      ${bookingsList()}
+    </section>
+
+    <section class="profile-section">
+      <div class="profile-section-head"><h2>Account</h2><p>Verification, settings, and admin tools.</p></div>
+      <div class="settings-stack">
+        <button class="settings-row" data-action="open-verification">${icon("verified")}<span><b>Verification</b><small>${esc(verificationStatusLabel())}</small></span><em>&rarr;</em></button>
+        <button class="settings-row" data-action="open-settings">${icon("settings")}<span><b>Settings</b><small>Account, notifications, personalization, privacy</small></span><em>&rarr;</em></button>
+        ${state.user.isCoreAdmin ? `<button class="settings-row" data-action="goto-admin">${icon("verified")}<span><b>Admin dashboard</b><small>Verification queue, review, audit trail</small></span><em>&rarr;</em></button>` : ""}
+      </div>
+    </section>`;
   $("#profileForm").onsubmit = saveProfile;
 }
 
@@ -1176,6 +1248,93 @@ function confirmDeleteAccount() {
       toast("Account deleted");
     } catch(error) { toast(error.message); setLoading(button,false); }
   };
+}
+
+/* ============ Core Administrator dashboard ============ */
+async function renderAdmin() {
+  const host = $("#tab-admin");
+  if (!host) return;
+  host.innerHTML = `<div class="page-head"><div><h1>Admin dashboard</h1><p>Verification queue, review tools, and the full audit trail.</p></div></div><div class="no-chat"><div><div class="empty-icon">${icon("verified")}</div><b>Loading admin data…</b><p>Fetching the verification queue.</p></div></div>`;
+  let overview, history;
+  try {
+    [overview, history] = await Promise.all([
+      request("/api/admin/overview"),
+      request("/api/admin/verification-history")
+    ]);
+  } catch (error) {
+    host.innerHTML = `<div class="page-head"><div><h1>Admin dashboard</h1></div></div>${emptyState("Admin access required", error.message)}`;
+    return;
+  }
+  const pending = overview.verifications || [];
+  const events = history.events || [];
+  host.innerHTML = `
+    <div class="page-head"><div><h1>Admin dashboard</h1><p>Core administrator tools — every action here is recorded in the audit trail with your account.</p></div></div>
+    <div class="metrics">
+      <div class="metric"><span class="metric-icon">&#9873;</span><div><small>Pending verifications</small><strong>${pending.length}</strong></div></div>
+      <div class="metric"><span class="metric-icon">&#10003;</span><div><small>Reviews recorded</small><strong>${events.length}</strong></div></div>
+      <div class="metric"><span class="metric-icon">&#9825;</span><div><small>Total users</small><strong>${overview.stats?.users ?? "—"}</strong></div></div>
+    </div>
+    <div class="section-head"><h2>Verification queue</h2><p>Open a submission to view documents and approve or reject.</p></div>
+    ${pending.length ? `<div class="admin-queue">${pending.map(item => `
+      <div class="admin-row">
+        <button class="person-main" data-action="admin-review" data-id="${item.id}">
+          <span class="avatar">${initials(item.applicantName)}</span>
+          <span class="conversation-text"><b>${esc(item.applicantName)}</b><span>${esc(item.applicantEmail)} · ${esc(item.applicantUniversity || "")}</span></span>
+        </button>
+        <small class="admin-date">${new Date(item.createdAt).toLocaleDateString()}</small>
+        <span class="status-tag pending">PENDING</span>
+        <button class="button primary small" data-action="admin-review" data-id="${item.id}">Review</button>
+      </div>`).join("")}</div>` : emptyState("Queue is clear", "No verification submissions are waiting for review.")}
+    <div class="section-head"><h2>Verification history</h2><p>Every approval and rejection, with the administrator who performed it.</p></div>
+    ${events.length ? `<div class="admin-history">${events.map(event => `
+      <div class="admin-row ${event.decision === "rejected" ? "rejected" : ""}">
+        <span class="conversation-text"><b>${esc(event.userName)}</b><span>${esc(event.userEmail)}</span></span>
+        <span class="status-tag ${event.decision === "approved" ? "ok" : "rejected"}">${event.decision === "approved" ? "VERIFIED" : "REJECTED"}</span>
+        <span class="conversation-text admin-by"><span>by ${esc(event.reviewedByName)}</span><span>${new Date(event.reviewedAt).toLocaleString()}</span></span>
+        ${event.reason ? `<span class="verify-reason">Reason: ${esc(event.reason)}</span>` : ""}
+      </div>`).join("")}</div>` : emptyState("No reviews yet", "Approvals and rejections will appear here.")}`;
+}
+
+async function adminReviewSheet(verificationId) {
+  let overview;
+  try { overview = await request("/api/admin/overview"); }
+  catch (error) { return toast(error.message); }
+  const item = (overview.verifications || []).find(entry => entry.id === verificationId);
+  if (!item) return toast("Submission not found (it may have been reviewed already)");
+  modal(`
+    <div class="modal-head"><div><span class="eyebrow">Verification review</span><h2>${esc(item.applicantName)}</h2><p>${esc(item.applicantEmail)} · ${esc(item.applicantRole)} · ${esc(item.applicantUniversity || "")}</p></div><button class="close-button">&times;</button></div>
+    <div class="verify-panel">
+      <div class="cost-row"><span>ID type</span><b>${esc(item.idType || "Student ID")}</b></div>
+      <div class="cost-row"><span>NIN (masked)</span><b>${esc(item.ninMasked || "—")}</b></div>
+      <div class="cost-row"><span>Submitted</span><b>${new Date(item.createdAt).toLocaleString()}</b></div>
+      <div class="admin-docs">
+        ${item.hasIdCard ? `<a class="button subtle" href="/api/admin/verification/${item.id}/document/idCard" target="_blank" rel="noopener">View ID card</a>` : `<span class="verify-reason">No ID card image</span>`}
+        ${item.hasSupportDocument ? `<a class="button subtle" href="/api/admin/verification/${item.id}/document/support" target="_blank" rel="noopener">View support document</a>` : `<span class="verify-reason">No support document</span>`}
+      </div>
+      <label style="display:grid;gap:7px"><span class="settings-group-label">Rejection reason (required when rejecting)</span>
+        <input id="adminRejectReason" placeholder="e.g. Document is not readable"></label>
+      <div class="modal-actions">
+        <button class="button subtle" data-action="close-modal">Cancel</button>
+        <button class="button danger" id="adminReject">Reject</button>
+        <button class="button primary" id="adminApprove">Approve verification</button>
+      </div>
+    </div>`, true);
+  $("#adminApprove").onclick = () => adminSubmitReview(verificationId, "approve", "");
+  $("#adminReject").onclick = () => {
+    const reason = ($("#adminRejectReason")?.value || "").trim();
+    if (!reason) return toast("Enter a rejection reason first");
+    adminSubmitReview(verificationId, "reject", reason);
+  };
+}
+
+async function adminSubmitReview(verificationId, decision, reason) {
+  try {
+    await request(`/api/admin/verification/${verificationId}/review`,{method:"POST",body:JSON.stringify({decision,reason})});
+    closeModal();
+    toast(decision === "approve" ? "Verification approved" : "Verification rejected");
+    await refreshData(false);
+    renderAdmin();
+  } catch(error) { toast(error.message); }
 }
 
 function verificationSheet() {
@@ -1671,6 +1830,8 @@ function bindEvents() {
     if (action==="finish-inspection") {closeModal();switchTab("messages");toast("Inspection request saved");}
     if (action==="open-settings") settingsSheet();
     if (action==="open-verification") verificationSheet();
+    if (action==="admin-review") adminReviewSheet(id);
+    if (action==="goto-admin") switchTab("admin");
     if (action==="activate-host") activateHost();
     if (action==="confirm-logout") confirmLogout();
     if (action==="do-logout") doLogout();
@@ -1708,6 +1869,7 @@ function bindEvents() {
     if (action==="back-to-profile") { state.settingsView = false; renderProfile(); }
     if (action==="back-to-profile-edit") { state.settingsView = false; renderProfile(); }
     if (action==="open-password") passwordSheet();
+    if (action==="focus-profile-form") { state.settingsView = false; renderProfile(); requestAnimationFrame(()=>{ const form=$("#profileForm"); if(form) form.scrollIntoView({behavior:"smooth",block:"center"}); }); }
     if (action==="open-connections") connectionsSheet();
     if (action==="open-terms") termsSheet();
     if (action==="logout-all-devices") logoutAllDevices();

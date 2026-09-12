@@ -344,7 +344,7 @@ async function run() {
       check("owner view never includes document bytes", !("idCardImage" in (submit.payload.verification || {})) && !("nin" in (submit.payload.verification || {})));
 
       const docBlocked = await fetch(`${URL_BASE}/api/admin/verification/${submit.payload.verification.id}/document/idCard`);
-      check("documents blocked without admin token (401)", docBlocked.status === 401);
+      check("documents blocked without admin token (401/403)", docBlocked.status === 401 || docBlocked.status === 403);
 
       const approval = await fetch(`${URL_BASE}/api/admin/verification/${submit.payload.verification.id}/review`, {
         method: "POST",

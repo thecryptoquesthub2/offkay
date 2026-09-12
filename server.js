@@ -386,6 +386,13 @@ function ensureDb() {
   }
 }
 
+// File-mode mirror of the Mongo "demoSeed_v2" state flag: marks that the
+// one-time demo seed already ran for this data directory so intentional
+// deletions stick. Persisted together with the seeded content.
+function seedFlagFile() { return path.join(DATA_DIR, "demo-seeded-v2"); }
+function readSeedFlag() { try { return fs.existsSync(seedFlagFile()); } catch { return true; } }
+function writeSeedFlag() { try { fs.writeFileSync(seedFlagFile(), new Date().toISOString()); } catch {}}
+
 function readDb() {
   ensureDb();
   const db = JSON.parse(fs.readFileSync(DB_FILE, "utf8").replace(/^\uFEFF/, ""));
@@ -478,7 +485,22 @@ function classifyDbError(lastError) {
 }
 
 async function loadDb() {
-  if (!USE_MONGODB) return readDb();
+  if (!USE_MONGODB) {
+    const db = readDb();
+    // Same one-time demo seed as Mongo mode, for an existing-but-emptied file DB.
+    if (process.env.OFFKAY_SEED_DEMO !== "0" && db.listings.length === 0 && !readSeedFlag()) {
+      const seed = seedDb();
+      const takenEmails = new Set(db.users.map(user => String(user.email || "").toLowerCase()));
+      seed.users = seed.users.filter(user => !takenEmails.has(user.email.toLowerCase()));
+      if (!seed.users.some(user => user.id === "usr_landlord_demo")) { seed.listings = []; seed.saved = []; seed.conversations = []; seed.messages = []; }
+      Object.assign(db, seed);
+      db.demoSeedMarked = true;
+      await persistDb(db);
+      console.log(`Database has no listings - seeded demo content (${seed.listings.length} listings, ${seed.users.length} demo accounts; one-time)`);
+    }
+    ensureCoreAdminRoles(db);
+    return db;
+  }
   const lint = lintMongoUri(process.env.MONGODB_URI);
   if (lint) {
     const boom = new Error(`Database connection failed. ${lint.hint} [code: ${lint.code}]`);
@@ -536,6 +558,30 @@ async function loadDb() {
     connections: connections.map(({ _id, ...rest }) => rest),
     passwordResets: passwordResets.map(({ _id, ...rest }) => rest)
   });
+  ensureCoreAdminRoles(db);
+  // One-time Mongo seeding: a database with no listings at all gets the same
+  // demo content as file mode — demo accounts, four sample listings, and the
+  // starter conversation. The seed is PERSISTED IMMEDIATELY (a GET request
+  // would otherwise show the content once and lose it), then a permanent flag
+  // in the state collection prevents re-seeding after intentional deletion.
+  // Every demo record has a fixed id, so concurrent cold starts converge.
+  // Opt out entirely with OFFKAY_SEED_DEMO=0.
+  if (process.env.OFFKAY_SEED_DEMO !== "0" && db.listings.length === 0) {
+    const seedFlag = await database.collection("state").findOne({ _id: "demoSeed_v2" });
+    if (!seedFlag) {
+      const seed = seedDb();
+      const takenEmails = new Set(db.users.map(user => String(user.email || "").toLowerCase()));
+      seed.users = seed.users.filter(user => !takenEmails.has(user.email.toLowerCase()));
+      // Only seed the demo listings/conversation when the demo landlord exists
+      // to own them; never seed content pointing at a missing owner.
+      const landlordPresent = seed.users.some(user => user.id === "usr_landlord_demo");
+      if (!landlordPresent) { seed.listings = []; seed.saved = []; seed.conversations = []; seed.messages = []; }
+      Object.assign(db, seed);
+      await persistDb(db);
+      await database.collection("state").updateOne({ _id: "demoSeed_v2" }, { $set: { seededAt: new Date().toISOString() } }, { upsert: true });
+      console.log(`Database has no listings - seeded demo content (${seed.listings.length} listings, ${seed.users.length} demo accounts; one-time; set OFFKAY_SEED_DEMO=0 to disable)`);
+    }
+  }
   loadedKeys = snapshotKeys(db);
   return db;
 }
@@ -548,7 +594,7 @@ function stableIdOf(name, item) {
     || crypto.createHash("sha1").update(JSON.stringify(item)).digest("hex");
 }
 
-const PERSIST_COLLECTIONS = ["users","sessions","listings","saved","conversations","messages","bookings","inspections","reports","verifications","notifications","connections","passwordResets"];
+const PERSIST_COLLECTIONS = ["users","sessions","listings","saved","conversations","messages","bookings","inspections","reports","verifications","notifications","connections","passwordResets","verification_events"];
 
 // Keys present in the database at load time. persistDb diffs against this so
 // records REMOVED server-side (sign-out, expired-session pruning, account or
@@ -567,6 +613,7 @@ function snapshotKeys(db) {
 async function persistDb(db) {
   if (!USE_MONGODB) {
     await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    if (db.demoSeedMarked) { writeSeedFlag(); db.demoSeedMarked = false; }
     return;
   }
   const database = await mongoDb();
@@ -581,6 +628,7 @@ async function persistDb(db) {
     inspections: db.inspections || [],
     reports: db.reports || [],
     verifications: db.verifications || [],
+    verification_events: db.verification_events || [],
     notifications: db.notifications || [],
     connections: db.connections || [],
     passwordResets: db.passwordResets || []
@@ -653,6 +701,10 @@ function serializeApi(handler) {
 function publicUser(user) {
   if (!user) return null;
   const { password, ...safe } = user;
+  // Authorization data the client may know: whether THIS session is an admin
+  // (used only to show the Admin entry point). Every admin action is still
+  // verified server-side — this flag gates UI, never authorization.
+  safe.isCoreAdmin = isCoreAdmin(user);
   return safe;
 }
 
@@ -801,6 +853,41 @@ function currentUser(req, db) {
 
 function canHost(user) {
   return user?.role === "landlord" || user?.hosting === true;
+}
+
+/* Core Administrator authorization — SERVER-SIDE ONLY. The role lives on the
+   account row ("core_admin"); eligibility is granted by the CORE_ADMIN_EMAILS
+   environment variable (comma-separated). Promotion happens lazily at request
+   time, so adding an email to the env var promotes that account on its next
+   authenticated request without any code change, and the role system is open
+   ended: any number of core admins is supported, two is just the start. The
+   frontend never decides admin access — it only learns `isCoreAdmin` from the
+   server, and every admin API call re-verifies the role independently. */
+const CORE_ADMIN_EMAILS = new Set(
+  String(process.env.CORE_ADMIN_EMAILS || "")
+    .split(",")
+    .map(entry => entry.trim().toLowerCase())
+    .filter(Boolean)
+);
+function isCoreAdmin(user) {
+  return Boolean(user) && user.role === "core_admin";
+}
+function ensureCoreAdminRoles(db) {
+  if (!CORE_ADMIN_EMAILS.size) return;
+  for (const user of db.users) {
+    if (CORE_ADMIN_EMAILS.has(String(user.email || "").toLowerCase()) && user.role !== "core_admin") {
+      user.role = "core_admin";
+    }
+  }
+}
+function requireCoreAdmin(req, res, db) {
+  const account = requireUser(req, res, db);
+  if (!account) return null;
+  if (!isCoreAdmin(account)) {
+    error(res, 403, "Core administrator access required");
+    return null;
+  }
+  return account;
 }
 
 function json(res, status, payload, headers = {}) {
@@ -1062,6 +1149,13 @@ async function api(req, res, url) {
       return error(res, 400, "Passwords do not match");
     }
     if (db.users.some(item => item.email === email)) return error(res, 409, "An account with this email already exists. Try signing in instead.");
+    // A signup can never SELF-ASSIGN the admin role: "core_admin" is only ever
+    // granted server-side to accounts whose email is listed in
+    // CORE_ADMIN_EMAILS (promotion happens in loadDb). Registering with
+    // role=core_admin is refused outright. An operator-listed email may sign
+    // up normally — that IS the provisioning path — and is promoted on the
+    // next load; nobody can grab the role by email alone.
+    if (body.role === "core_admin") return error(res, 403, "Administrator accounts are provisioned by the operator. The core_admin role cannot be requested at signup.");
     if (EPHEMERAL_FS) {
       // Never report a successful account creation when the write cannot
       // survive this request — that is what produces "invalid credentials"
@@ -1884,10 +1978,26 @@ async function api(req, res, url) {
   }
 
   if (route.startsWith("/api/admin/")) {
-    // Every admin route requires a valid bearer ADMIN_TOKEN. Submitted
-    // verification documents are ONLY reachable here — never through any
-    // public or user-scoped route.
-    if (!adminTokenOk(req)) return error(res,401,"Admin token required");
+    // Core Administrator authorization, enforced HERE on every admin route:
+    // the request must be an authenticated session whose account has
+    // role === "core_admin", OR carry the operator bearer ADMIN_TOKEN (CLI /
+    // ops use). Hiding buttons client-side is never the security boundary.
+    // Submitted verification documents are ONLY reachable inside this block —
+    // never through any public or user-scoped route.
+    const sessionAdmin = isCoreAdmin(currentUser(req, db));
+    if (!sessionAdmin && !adminTokenOk(req)) return error(res,403,"Core administrator access required");
+    // The acting identity for the audit trail: the signed-in core admin when
+    // session-authenticated, else the operator token.
+    const actingAdmin = sessionAdmin ? currentUser(req, db) : { id:"op_admin_token", name:"Operator (admin token)" };
+    const recordReviewEvent = (verification, decision, reason) => {
+      db.verification_events ||= [];
+      db.verification_events.push({
+        id:id("evt"), verificationId:verification.id, userId:verification.userId,
+        decision, reason: reason || null,
+        reviewedBy:actingAdmin.id, reviewedByName:actingAdmin.name,
+        reviewedAt:new Date().toISOString()
+      });
+    };
     if (route === "/api/admin/overview" && method === "GET") {
       return json(res,200,{
         stats: {
@@ -1923,14 +2033,34 @@ async function api(req, res, url) {
       if (!approve && !reason) return error(res,400,"Give a short rejection reason");
       verification.status = approve ? "verified" : "rejected";
       verification.reviewedAt = new Date().toISOString();
+      verification.reviewedBy = actingAdmin.id;
+      verification.reviewedByName = actingAdmin.name;
       verification.rejectionReason = approve ? null : reason;
       const applicant = db.users.find(u => u.id === verification.userId);
       if (applicant) {
         applicant.verified = approve;
         applicant.verificationStatus = verification.status;
       }
+      recordReviewEvent(verification, approve ? "approved" : "rejected", reason);
+      notify(db, verification.userId, approve
+        ? { type:"verification", title:"You are verified", body:`Your Offkay verification was approved by ${actingAdmin.name}.`, actorId:actingAdmin.id }
+        : { type:"verification", title:"Verification update", body:`Your verification was not approved. ${reason}`, actorId:actingAdmin.id });
       await persistDb(db);
       return json(res,200,{verification:verificationForOwner(verification,applicant)});
+    }
+    // Immutable review history (audit trail): who approved/rejected what, when.
+    if (route === "/api/admin/verification-history" && method === "GET") {
+      const events = (db.verification_events || [])
+        .slice()
+        .sort((a,b) => String(b.reviewedAt||"").localeCompare(String(a.reviewedAt||"")))
+        .slice(0, 200)
+        .map(event => {
+          const subject = db.users.find(u => u.id === event.userId);
+          return { id:event.id, userId:event.userId, userName:subject?.name || "Unknown", userEmail:subject?.email || "",
+            decision:event.decision, reason:event.reason, reviewedBy:event.reviewedBy, reviewedByName:event.reviewedByName,
+            reviewedAt:event.reviewedAt };
+        });
+      return json(res,200,{ events });
     }
     const documentMatch = route.match(/^\/api\/admin\/verification\/([^/]+)\/document\/(idCard|support)$/);
     // SECURITY: document bytes are only served inside this /api/admin/* block,
