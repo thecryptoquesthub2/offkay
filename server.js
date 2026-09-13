@@ -931,7 +931,7 @@ async function mediaDataUrl(token) {
     // (sha1 of the whole document instead of the content token): scan the
     // media collection once, re-key every blob correctly, drop the stale
     // documents, then serve the requested bytes from the healed set.
-    if (!mediaScanHealed) {
+    if (!mediaScanHealed && Date.now() > mediaHealNotBefore) {
       mediaScanHealed = true;
       try {
         const all = await collection.find({}).toArray();
@@ -948,12 +948,17 @@ async function mediaDataUrl(token) {
           MEDIA_TOKENS_LIMIT_PRUNE();
           return healed.dataUrl;
         }
-      } catch (healErr) { console.error("media heal failed:", healErr?.message); }
+      } catch (healErr) {
+        console.error("media heal failed:", healErr?.message);
+        mediaScanHealed = false;
+        mediaHealNotBefore = Date.now() + 30_000;
+      }
     }
     return null;
   } catch { return null; }
 }
 let mediaScanHealed = false;
+let mediaHealNotBefore = 0;
 function mediaToken(dataUrl) {
   return crypto.createHash("sha1").update(String(dataUrl)).digest("hex");
 }

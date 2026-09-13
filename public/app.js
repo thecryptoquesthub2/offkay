@@ -594,7 +594,10 @@ function switchTab(tab, render = true) {
     if (tab === "home") renderHome();
     if (tab === "admin") renderAdmin();
   }
-  window.scrollTo({top:0,behavior:"smooth"});
+  // The Messages tab owns no page scroll (its frame is viewport-locked and the
+  // message list is the scroll container); forcing body scroll there is a no-op
+  // at best and visually jarring at worst.
+  if (tab !== "messages") window.scrollTo({top:0,behavior:"smooth"});
 }
 
 function proximityChip(listing) {
