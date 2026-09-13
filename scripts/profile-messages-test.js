@@ -75,7 +75,9 @@ async function main() {
 
     // ---- avatar upload + privacy ----
     const up = await call(ada, "PATCH", "/api/profile", { avatar: PIXEL_JPEG });
-    check("ada uploads a profile picture", up.status === 200 && up.payload.user && up.payload.user.avatarUrl === PIXEL_JPEG);
+    // The avatar is stored as bytes and served from /api/media/:token; the
+    // response carries the URL ref. Same upload must always hash to the same token.
+    check("ada uploads a profile picture", up.status === 200 && up.payload.user && up.payload.user.avatarUrl === `/api/media/${require("node:crypto").createHash("sha1").update(PIXEL_JPEG).digest("hex")}`);
     const bad = await call(ada, "PATCH", "/api/profile", { avatar: "https://evil.example/x.png" });
     check("remote avatar URL is rejected", bad.status === 400);
     const prof1 = await call(ada, "PATCH", "/api/profile", { bio: "Quiet night owl", budget: 500000, habits: ["Quiet home"] });
@@ -131,7 +133,7 @@ async function main() {
     // avatar persisted across sessions (seen from bode's fresh session)
     const avatarAfter = await call(bode, "GET", "/api/users?q=ada");
     const adaAfter = (avatarAfter.payload.people || []).find(p => p.name === "Ada Obi");
-    check("avatar persists across logout/login", Boolean(adaAfter && adaAfter.avatarUrl === PIXEL_JPEG));
+    check("avatar persists across logout/login", Boolean(adaAfter && adaAfter.avatarUrl === `/api/media/${require("node:crypto").createHash("sha1").update(PIXEL_JPEG).digest("hex")}`));
 
     // ---- connection lifecycle: request → accept → persists ----
     const connect = await call(bode, "POST", "/api/connections", { userId: adaView.id });

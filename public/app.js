@@ -1143,11 +1143,14 @@ let pendingChatAttachments = [];
 const CHAT_MEDIA_LIMIT = 650 * 1000; // bytes; leaves headroom in the 2 MB JSON body
 
 function attachmentMarkup(attachment) {
-  if (!attachment?.dataUrl) return "";
+  // Server returns URL refs (/api/media/:token); pending uploads are still
+  // data URLs - accept both so the sender's own echo renders instantly.
+  const src = attachment?.url || attachment?.dataUrl;
+  if (!src) return "";
   const mime = String(attachment.mime || "");
-  if (mime.startsWith("image/")) return `<button type="button" class="chat-media chat-image" data-action="open-image-viewer" aria-label="View photo full size"><img src="${attachment.dataUrl}" alt="${esc(attachment.name || "Photo")}" loading="lazy"></button>`;
-  if (mime.startsWith("video/")) return `<video class="chat-media" src="${attachment.dataUrl}" controls preload="metadata" playsinline></video>`;
-  if (mime.startsWith("audio/")) return `<span class="voice-note"><small>Voice note${attachment.meta && /\d/.test(attachment.meta) ? " \u00b7 " + esc(attachment.meta) : ""}</small><audio src="${attachment.dataUrl}" controls preload="metadata"></audio></span>`;
+  if (mime.startsWith("image/")) return `<button type="button" class="chat-media chat-image" data-action="open-image-viewer" aria-label="View photo full size"><img src="${src}" alt="${esc(attachment.name || "Photo")}" loading="lazy"></button>`;
+  if (mime.startsWith("video/")) return `<video class="chat-media" src="${src}" controls preload="metadata" playsinline></video>`;
+  if (mime.startsWith("audio/")) return `<span class="voice-note"><small>Voice note${attachment.meta && /\d/.test(attachment.meta) ? " \u00b7 " + esc(attachment.meta) : ""}</small><audio src="${src}" controls preload="metadata"></audio></span>`;
   return "";
 }
 

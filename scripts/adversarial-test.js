@@ -184,6 +184,27 @@ async function main() {
     const scriptAvatar = await call(victim, "PATCH", "/api/profile", { avatar: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" });
     check("svg avatar rejected (script vector)", scriptAvatar.status === 400);
 
+    /* ---------- bootstrap payload weight (splash-hang regression) ----------
+       Inline data URLs in /api/bootstrap once multiplied to ~1MB per owner
+       avatar, hanging the app on the splash. Payloads must stay small and
+       reference /api/media/:token URLs instead. */
+    const bootText = JSON.stringify(boot.payload);
+    check("bootstrap carries no inline data URLs", !bootText.includes("data:image"), `${(bootText.length / 1024).toFixed(0)}KB`);
+    check("bootstrap payload stays lean", bootText.length < 400_000, `${(bootText.length / 1024).toFixed(0)}KB`);
+    const avHost = jar();
+    await call(avHost, "POST", "/api/auth/signup", { name: "Weight Host", email: "weighthost@test.local", password: "password123", role: "landlord", university: "University of Lagos" });
+    await call(avHost, "POST", "/api/host/activate");
+    const weightAvatar = "data:image/jpeg;base64," + Buffer.alloc(800_000, 7).toString("base64");
+    await call(avHost, "PATCH", "/api/profile", { avatar: weightAvatar });
+    for (let i = 0; i < 3; i++) await call(avHost, "POST", "/api/listings", { title: `Weight Manor ${i}`, area: "Lekki", price: 250000 + i, type: "Studio" });
+    const weighted = await call(victim, "GET", "/api/bootstrap");
+    const weightedText = JSON.stringify(weighted.payload);
+    check("3 listings + 1MB avatar keep bootstrap lean", weighted.status === 200 && weightedText.length < 400_000, `${(weightedText.length / 1024).toFixed(0)}KB`);
+    // owner.avatars surface as /api/media URLs; the 800KB base64 never travels.
+    const avatarPrefix = weightAvatar.slice(0, 60);
+    check("weighted bootstrap exposes owner avatar as URL, not bytes", weightedText.includes("/api/media/") && !weightedText.includes(avatarPrefix),
+      `hasUrl=${weightedText.includes("/api/media/")} hasBytes=${weightedText.includes(avatarPrefix)}`);
+
     /* ---------- rate limits exist ---------- */
     const statuses = [];
     for (let i = 0; i < 8; i++) {

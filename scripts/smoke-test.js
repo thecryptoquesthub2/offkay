@@ -199,7 +199,12 @@ async function run() {
     const mediaSend = await call(tenant, "POST", `/api/conversations/${convoId}/messages`, { text:"", attachments:[{ dataUrl: mediaImage, name:"room.png" }] });
     check("image attachment message is accepted (201)", mediaSend.status === 201 && mediaSend.payload.message.attachments?.[0]?.mime === "image/png");
     const mediaRead = await call(landlord, "GET", `/api/conversations/${convoId}/messages`);
-    check("attachment persists and is readable by recipient", mediaRead.status === 200 && mediaRead.payload.messages.some(m => m.attachments?.[0]?.dataUrl === mediaImage));
+    const mediaRef = mediaRead.payload.messages.find(m => m.attachments?.[0]?.url)?.attachments[0];
+    check("attachment persists as a media URL readable by recipient", mediaRead.status === 200 && typeof mediaRef?.url === "string" && mediaRef.url.startsWith("/api/media/"));
+    const mediaBytes = await fetch(`${URL_BASE}${mediaRef.url}`, { headers: { Cookie: landlord.header() } });
+    check("media endpoint serves the image bytes with cache headers", mediaBytes.status === 200 && (mediaBytes.headers.get("content-type") || "") === "image/png" && /immutable/i.test(mediaBytes.headers.get("cache-control") || ""));
+    const mediaAnon = await fetch(`${URL_BASE}${mediaRef.url}`);
+    check("media endpoint requires a session", mediaAnon.status === 401 || mediaAnon.status === 403);
     const badType = await call(tenant, "POST", `/api/conversations/${convoId}/messages`, { attachments:[{ dataUrl:"data:application/pdf;base64," + Buffer.from("x").toString("base64") }] });
     check("disallowed attachment type is rejected (415)", badType.status === 415);
     const tooBig = await call(tenant, "POST", `/api/conversations/${convoId}/messages`, { attachments:[{ dataUrl:"data:image/png;base64," + Buffer.alloc(950000, 7).toString("base64") }] });

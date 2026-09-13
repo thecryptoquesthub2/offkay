@@ -575,10 +575,57 @@ function serializeApi(handler) {
   return run;
 }
 
+// ---------------------------------------------------------------------------
+// Media references: avatars, listing photos, and chat attachments are stored
+// as inline data URLs. Inlining those bytes into every API payload made
+// /api/bootstrap grow by ~1MB PER listing owner avatar (the app hung on the
+// splash while megabytes downloaded). Instead, payloads carry short
+// /api/media/:token URLs; the endpoint hashes stored blobs on the fly and
+// serves them with long-lived caching. Storage format is unchanged.
+// ---------------------------------------------------------------------------
+const MEDIA_TOKENS = new Map(); // sha1 hex -> data URL
+let mediaHydrated = false;
+function mediaToken(dataUrl) {
+  return crypto.createHash("sha1").update(String(dataUrl)).digest("hex");
+}
+function mediaUrlOf(dataUrl) {
+  if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return null;
+  const token = mediaToken(dataUrl);
+  MEDIA_TOKENS.set(token, dataUrl);
+  return `/api/media/${token}`;
+}
+function hydrateMediaTokens(db) {
+  const users = db.users || [];
+  for (const user of users) {
+    if (user.avatar) mediaUrlOf(user.avatar);
+    if (user.googlePicture) mediaUrlOf(user.googlePicture);
+  }
+  for (const listing of db.listings || []) for (const photo of listing.photos || []) mediaUrlOf(photo);
+  for (const message of db.messages || []) for (const a of message.attachments || []) mediaUrlOf(a.dataUrl);
+  for (const verification of db.verifications || []) {
+    if (verification.idCardImage) mediaUrlOf(verification.idCardImage);
+    if (verification.supportDocument) mediaUrlOf(verification.supportDocument);
+  }
+  MEDIA_TOKENS_LIMIT_PRUNE();
+}
+function MEDIA_TOKENS_LIMIT_PRUNE() {
+  // Memory guard: keep the most recent 5000 entries.
+  if (MEDIA_TOKENS.size <= 5000) return;
+  const excess = MEDIA_TOKENS.size - 5000;
+  let dropped = 0;
+  for (const key of MEDIA_TOKENS.keys()) { MEDIA_TOKENS.delete(key); if (++dropped >= excess) break; }
+}
+// Payloads never carry attachment bytes; reads get URL refs only.
+function attachmentsOut(attachments) {
+  return (Array.isArray(attachments) ? attachments : []).map(a => ({
+    name: a.name || null, mime: a.mime || null, meta: a.meta || null,
+    url: mediaUrlOf(a.dataUrl)
+  })).filter(a => a.url);
+}
 function publicUser(user) {
   if (!user) return null;
   const { password, ...safe } = user;
-  safe.avatarUrl = user.avatar || user.googlePicture || null;
+  safe.avatarUrl = mediaUrlOf(user.avatar) || user.googlePicture || null;
   // Authorization data the client may know: whether THIS session is an admin
   // (used only to show the Admin entry point). Every admin action is still
   // verified server-side — this flag gates UI, never authorization.
@@ -665,7 +712,7 @@ function profileView(account) {
     memberSince: account.createdAt || null,
     // Public-safe avatar: the user's uploaded photo or their Google profile
     // picture. Never an arbitrary user-supplied URL.
-    avatarUrl: account.avatar || account.googlePicture || null
+    avatarUrl: mediaUrlOf(account.avatar) || account.googlePicture || null
   };
 }
 
@@ -865,7 +912,8 @@ function listingPayload(listing, db, user) {
     ...publicListing,
     ...(isOwnerView ? { latitude, longitude } : {}),
     ...approximateCoords(listing),
-    owner: owner ? { id:owner.id, name:owner.name, verified:owner.verified, avatarUrl: owner.avatar || owner.googlePicture || null } : null,
+    owner: owner ? { id:owner.id, name:owner.name, verified:owner.verified, avatarUrl: mediaUrlOf(owner.avatar) || owner.googlePicture || null } : null,
+    photos: (Array.isArray(listing.photos) ? listing.photos : []).slice(0, 4).map(photo => mediaUrlOf(photo)).filter(Boolean),
     hostView: Boolean(owner && (owner.verified === true || owner.role === "landlord")),
     saved: Boolean(user && db.saved.some(item => item.userId === user.id && item.listingId === listing.id)),
     proximity: proximityPayload(listing),
@@ -888,7 +936,7 @@ function conversationPayload(conversation, db, viewerId) {
     listingTitle: listing ? listing.title : null,
     updatedAt: conversation.updatedAt,
     other: profileView(other),
-    lastMessage: last ? { ...last, text: last.text || (last.attachments?.length ? (last.attachments[0].mime.startsWith("video/") ? "Video" : last.attachments[0].mime.startsWith("image/") ? "Photo" : "Voice note") : "") } : null,
+    lastMessage: last ? { id: last.id, createdAt: last.createdAt, senderId: last.senderId, text: last.text || (last.attachments?.length ? (last.attachments[0].mime.startsWith("video/") ? "Video" : last.attachments[0].mime.startsWith("image/") ? "Photo" : "Voice note") : ""), attachments: attachmentsOut(last.attachments) } : null,
     unread
   };
 }
@@ -986,6 +1034,7 @@ async function api(req, res, url) {
   const ip = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "local";
   if (!rateLimit(`ip:${ip}`, 300, 60_000)) return error(res, 429, "Too many requests. Slow down a moment.");
   const db = await loadDb();
+  if (!mediaHydrated) { hydrateMediaTokens(db); mediaHydrated = true; }
   if (db.sessions.some(session => session.expiresAt <= Date.now())) {
     db.sessions = db.sessions.filter(session => session.expiresAt > Date.now());
     await persistDb(db);
@@ -993,6 +1042,20 @@ async function api(req, res, url) {
   const user = currentUser(req, db);
   const method = req.method;
   const route = url.pathname;
+
+  const mediaMatch = route.match(/^\/api\/media\/([a-f0-9]{40})$/);
+  if (mediaMatch && method === "GET") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const dataUrl = MEDIA_TOKENS.get(mediaMatch[1]);
+    const mimeMatch = typeof dataUrl === "string" && dataUrl.match(/^data:((?:image\/(?:jpeg|png|webp|gif))|(?:video\/(?:mp4|webm|quicktime))|(?:audio\/(?:webm|mp4|mpeg|ogg|wav)));base64,([A-Za-z0-9+\/=]+)$/);
+    if (!mimeMatch) return error(res,404,"Media not found");
+    res.writeHead(200, {
+      "Content-Type": mimeMatch[1],
+      "Cache-Control": "private, max-age=31536000, immutable",
+      "X-Content-Type-Options": "nosniff"
+    });
+    return res.end(Buffer.from(mimeMatch[2], "base64"));
+  }
 
   if (route === "/api/bootstrap" && method === "GET") {
     const listings = db.listings.filter(item => item.status === "active").map(item => listingPayload(item, db, user));
@@ -1493,7 +1556,7 @@ async function api(req, res, url) {
     const messages = db.messages.filter(item => item.conversationId === conversation.id).sort((a,b) => a.createdAt.localeCompare(b.createdAt));
     conversation.reads[account.id] = new Date().toISOString();
     await persistDb(db);
-    return json(res,200,{conversation:conversationPayload(conversation, db, account.id),messages});
+    return json(res,200,{conversation:conversationPayload(conversation, db, account.id),messages:messages.map(message => ({ ...message, attachments: attachmentsOut(message.attachments) }))});
   }
   if (messagesMatch && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
@@ -1544,7 +1607,7 @@ async function api(req, res, url) {
       notify(db, recipient.id, { type:"message", title:`New message from ${account.name}`, body:previewText.slice(0,120), actorId:account.id, meta:{ conversationId:conversation.id } });
     }
     await persistDb(db);
-    return json(res,201,{message});
+    return json(res,201,{message:{ ...message, attachments: attachmentsOut(message.attachments) }});
   }
 
   if (route === "/api/users" && method === "GET") {
