@@ -10,8 +10,17 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 let MongoMemoryServer = null;
+let useFake = false;
 try { ({ MongoMemoryServer } = require("mongodb-memory-server")); }
-catch { console.log("mongodb-memory-server not installed - Mongo-mode probe skipped (run: npm install --no-save mongodb-memory-server)"); process.exit(0); }
+catch {
+  if (process.env.OFFKAY_FAKE_MONGO !== "1") {
+    console.log("mongodb-memory-server not installed - rerun with OFFKAY_FAKE_MONGO=1 to use the file-backed fake driver");
+    process.exit(0);
+  }
+  useFake = true;
+  console.log("(no mongodb-memory-server - using file-backed fake driver: same driver API, single-process)");
+}
+const fakeFile = path.join(os.tmpdir(), `offkay-fakemongo-${Date.now()}.json`);
 
 const PORT = 4613;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -39,11 +48,15 @@ async function call(method, url, body) {
 }
 
 async function main() {
-  const mongod = await MongoMemoryServer.create();
-  const uri = mongod.getUri("offkay");
+  const mongod = useFake ? null : await MongoMemoryServer.create();
+  const uri = useFake ? "mongodb://fake:fake@127.0.0.1:27017/offkay" : mongod.getUri("offkay");
+  if (useFake) process.env.OFFKAY_FAKE_MONGO_FILE = fakeFile;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "offkay-mongoprobe-"));
-  const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "", MONGODB_URI: uri, MONGODB_DB: "offkay" },
+  const serverArgs = useFake
+    ? ["--require", path.join(__dirname, "fake-mongo-preload.cjs"), path.join(__dirname, "..", "server.js")]
+    : [path.join(__dirname, "..", "server.js")];
+  const proc = spawn(process.execPath, serverArgs, {
+    env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", OFFKAY_DATA_DIR: tmp, PAYSTACK_SECRET_KEY: "", MONGODB_URI: uri, MONGODB_DB: "offkay", ...(useFake ? { OFFKAY_FAKE_MONGO: "1", OFFKAY_FAKE_MONGO_FILE: fakeFile } : {}) },
     stdio: ["ignore", "ignore", "inherit"]
   });
   try {
@@ -81,6 +94,26 @@ async function main() {
 
     // Deletion propagation: the logout from earlier must have actually removed
     // the first session document from Mongo (not just from the request copy).
+    if (useFake) {
+      // The fake driver persists to a JSON file; inspect that directly instead
+      // of opening a real driver connection.
+      await new Promise(r => setTimeout(r, 300));
+      const snap = JSON.parse(fs.readFileSync(fakeFile, "utf8")).collections;
+      const sessionTokens = snap.sessions || [];
+      check("exactly the live sessions exist in Mongo (signed-out one deleted, none resurrected)", sessionTokens.length === 2, `sessions in DB: ${sessionTokens.length}`);
+      const userCount = (snap.users || []).filter(u => u.email === email).length;
+      check("user document still present after logout", userCount === 1);
+      const del = await call("DELETE", "/api/account", { password });
+      check("account deletion succeeds", del.status === 200);
+      await new Promise(r => setTimeout(r, 300));
+      const snap2 = JSON.parse(fs.readFileSync(fakeFile, "utf8")).collections;
+      const userAfterDelete = (snap2.users || []).filter(u => u.email === email).length;
+      check("deleted account is gone from Mongo", userAfterDelete === 0, `users matching: ${userAfterDelete}`);
+      const goneLogin = await call("POST", "/api/auth/login", { email, password });
+      check("deleted account cannot log in", goneLogin.status === 401);
+      const sessionsAfterDelete = (snap2.sessions || []).length;
+      check("deleted account's sessions also removed from Mongo", sessionsAfterDelete === 0, `sessions left: ${sessionsAfterDelete}`);
+    } else {
     const { MongoClient } = require("mongodb");
     const client = new MongoClient(uri);
     await client.connect();
@@ -102,9 +135,11 @@ async function main() {
     const sessionsAfterDelete = await mongoDb.collection("sessions").countDocuments({});
     check("deleted account's sessions also removed from Mongo", sessionsAfterDelete === 0, `sessions left: ${sessionsAfterDelete}`);
     await client.close();
+    }
   } finally {
     proc.kill("SIGKILL");
-    try { await mongod.stop(); } catch {}
+    try { if (mongod) await mongod.stop(); } catch {}
+    try { fs.rmSync(fakeFile, { force: true }); } catch {}
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
   }
   console.log(`\n${passed} passed, ${failed} failed`);

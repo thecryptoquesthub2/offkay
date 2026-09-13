@@ -335,6 +335,9 @@ function readDb() {
   db.connections ||= [];
   db.passwordResets ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
+  // Heal legacy duplicate direct conversations on load. loadDb persists the
+  // heal (see below) and removes the __dedupe bookkeeping key afterwards.
+  dedupeDirectConversations(db);
   db.bookings.forEach(booking => {
     if (!Array.isArray(booking.paymentShares) || booking.paymentShares.length !== booking.splitCount) {
       const base = Math.floor(booking.amount / booking.splitCount);
@@ -355,18 +358,26 @@ const USE_MONGODB = Boolean(process.env.MONGODB_URI);
 const EPHEMERAL_FS = !USE_MONGODB && Boolean(process.env.VERCEL);
 
 let mongoDbPromise = null;
+// Circuit breaker: after a failed handshake, requests fail fast for 10s
+// instead of every one of them paying the full server-selection timeout.
+// Measured with an unreachable cluster: 8.1s per request before, ~1ms while
+// the breaker is open (plus one 4s handshake attempt per 10s window).
+let mongoDownUntil = 0;
 function mongoDb() {
+  if (Date.now() < mongoDownUntil) {
+    throw Object.assign(new Error("database connection is cooling down after a failure"), { code: "EDBCOOL" });
+  }
   if (!mongoDbPromise) {
     const { MongoClient } = require("mongodb");
     mongoDbPromise = new MongoClient(process.env.MONGODB_URI, {
       maxPoolSize: 5,
-      serverSelectionTimeoutMS: 8_000,
-      connectTimeoutMS: 8_000,
+      serverSelectionTimeoutMS: 4_000,
+      connectTimeoutMS: 4_000,
       socketTimeoutMS: 20_000,
       retryWrites: true
     }).connect()
-      .then(client => client.db(process.env.MONGODB_DB || "offkay"))
-      .catch(err => { mongoDbPromise = null; throw err; });
+      .then(client => { mongoDownUntil = 0; return client.db(process.env.MONGODB_DB || "offkay"); })
+      .catch(err => { mongoDbPromise = null; mongoDownUntil = Date.now() + 10_000; throw err; });
   }
   return mongoDbPromise;
 }
@@ -403,12 +414,46 @@ function classifyDbError(lastError) {
   return { hint, code };
 }
 
+// Read receipts and similar lossless bookkeeping mutate the live snapshot
+// without blocking the request on a full database rewrite. A short debounce
+// flushes through the SAME serialized chain as API requests, so the write can
+// never interleave with a handler-triggered persist.
+let dirtyTimer = null;
+function markDirty() {
+  if (dirtyTimer) return;
+  dirtyTimer = setTimeout(() => {
+    dirtyTimer = null;
+    const target = USE_MONGODB ? dbCache?.db : fileCache?.db;
+    if (!target) return;
+    apiChain = persistDb(target).catch(() => {});
+  }, 1_500);
+}
+
 async function loadDb() {
   if (!USE_MONGODB) {
+    if (fileCache) {
+      let changed = true;
+      try { changed = fs.statSync(DB_FILE).mtimeMs !== fileCache.mtime; } catch {}
+      if (!changed) {
+        ensureCoreAdminRoles(fileCache.db);
+        return fileCache.db;
+      }
+    }
     const loaded = readDb();
     ensureCoreAdminRoles(loaded);
+    // Durably persist the dedupe heal: the merged snapshot replaces the file
+    // immediately, not just on some future unrelated write. One write per
+    // server start, and only when duplicates actually existed.
+    const fileHeal = loaded.__dedupe;
+    delete loaded.__dedupe;
+    if (fileHeal && (fileHeal.droppedConversations.length || fileHeal.newPairKeys.length)) {
+      try { await persistDb(loaded); } catch {}
+    }
     const legacy = hasLegacyBlobs(loaded);
     const db = dbRefsShape(loaded);
+    let mtime = 0;
+    try { mtime = fs.statSync(DB_FILE).mtimeMs; } catch {}
+    fileCache = { db, loadedAt: Date.now(), mtime };
     if (legacy) { try { await persistDb(db); } catch {} }
     return db;
   }
@@ -425,7 +470,8 @@ async function loadDb() {
   // instance handlers are serialized, so a fresh-enough snapshot served as a
   // per-request clone is safe; persistDb refreshes the cache on every write.
   if (dbCache && Date.now() - dbCache.loadedAt < DB_CACHE_TTL) {
-    return structuredClone(dbCache.db);
+    ensureCoreAdminRoles(dbCache.db);
+    return dbCache.db;
   }
   let database = null;
   let lastError = null;
@@ -441,6 +487,11 @@ async function loadDb() {
     }
   }
   if (!database) {
+    if (lastError?.code === "EDBCOOL") {
+      const boom = new Error("Database connection failed. It is reconnecting after a temporary failure - try again in a few seconds. [code: reconnecting]");
+      boom.status = 503;
+      throw boom;
+    }
     const { hint, code } = classifyDbError(lastError);
     console.error("Database unavailable:", lastError?.message);
     const boom = new Error(`Database connection failed. ${hint} [code: ${code}]`);
@@ -483,7 +534,33 @@ async function loadDb() {
   const legacy = hasLegacyBlobs(loaded);
   const db = dbRefsShape(loaded);
   ensureCoreAdminRoles(db);
+  dbCache = { db, loadedAt: Date.now() };
   loadedKeys = snapshotKeys(db);
+  persistedIndex = buildPersistedIndex(db);
+  // Persist the dedupe heal (readDbShape already merged duplicates in memory):
+  // dropped conversation documents must be DELETED in Mongo, re-parented
+  // messages REWRITTEN, and conversations that gained a pairKey UPSERTED —
+  // otherwise the healed view would reappear from Mongo on the next cold load.
+  const heal = db.__dedupe;
+  delete db.__dedupe;
+  if (heal && (heal.droppedConversations.length || heal.touchedMessages.length || heal.newPairKeys.length)) {
+    try {
+      const conversations = database.collection("conversations");
+      const messages = database.collection("messages");
+      if (heal.droppedConversations.length) await conversations.deleteMany({ _id: { $in: heal.droppedConversations } });
+      for (const conversation of db.conversations) {
+        if (!heal.newPairKeys.includes(conversation.id)) continue;
+        await conversations.replaceOne({ _id: conversation.id }, { ...conversation, _id: conversation.id }, { upsert: true });
+      }
+      for (const message of db.messages) {
+        if (!heal.touchedMessages.includes(message.id)) continue;
+        await messages.replaceOne({ _id: message.id }, { ...message, _id: message.id }, { upsert: true });
+      }
+      // Re-baseline the diff index so the healed shape is the new reference.
+      persistedIndex = buildPersistedIndex(db);
+      loadedKeys = snapshotKeys(db);
+    } catch (err) { console.error("Conversation dedupe heal persist failed:", err?.message); }
+  }
   // One-time migration: rewrite legacy inline blobs as refs + media docs so
   // the very next load is light. Without this, cold instances would keep
   // paying the full-blob download until a random write happened to migrate.
@@ -508,10 +585,36 @@ const PERSIST_COLLECTIONS = ["users","sessions","listings","saved","conversation
 // never interleave.
 let loadedKeys = null;
 
+// Last-persisted content per document (non-media: id -> JSON string; media:
+// Set of tokens). persistDb uploads only documents that actually changed —
+// previously EVERY document of EVERY collection was re-replaced over the
+// network on every save, and one debounced read-receipt flush could rewrite
+// the whole database (media blobs included), stalling all queued requests.
+let persistedIndex = null;
+function buildPersistedIndex(db) {
+  const index = new Map();
+  for (const name of PERSIST_COLLECTIONS) {
+    if (name === "media") {
+      index.set("media", new Set((db.media || []).map(item => item._id)));
+      continue;
+    }
+    const map = new Map();
+    for (const item of db[name] || []) map.set(stableIdOf(name, item), JSON.stringify(item));
+    index.set(name, map);
+  }
+  return index;
+}
+
 // Snapshot cache for loadDb (see comment inside loadDb). TTL is short so
 // multi-instance deployments converge quickly; writes always refresh it.
 let dbCache = null;
 const DB_CACHE_TTL = 3_000;
+// File-mode snapshot cache: re-reading + JSON-parsing the whole db.json on
+// EVERY request made each click wait behind disk work. The snapshot is shared
+// (not cloned) so read receipts and similar in-request mutations survive in
+// memory, and it is invalidated via the file's mtime so external edits are
+// still picked up. persistDb refreshes it after every write.
+let fileCache = null;
 function snapshotKeys(db) {
   const snap = {};
   for (const name of PERSIST_COLLECTIONS) {
@@ -523,7 +626,12 @@ function snapshotKeys(db) {
 async function persistDb(db) {
   mediaFlush(db);
   if (!USE_MONGODB) {
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+    // Compact JSON: pretty-printing multiplied the bytes (and the write time)
+    // of every save for zero benefit.
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(db));
+    let mtime = 0;
+    try { mtime = fs.statSync(DB_FILE).mtimeMs; } catch {}
+    fileCache = { db, loadedAt: Date.now(), mtime };
     return;
   }
   const database = await mongoDb();
@@ -544,13 +652,46 @@ async function persistDb(db) {
     passwordResets: db.passwordResets || [],
     media: db.media || []
   };
-  const writes = Object.entries(collections).map(([name, items]) => {
-    if (!items.length) return Promise.resolve();
+  const index = persistedIndex || (persistedIndex = buildPersistedIndex(db));
+  const writes = [];
+  for (const [name, items] of Object.entries(collections)) {
+    if (!items.length) continue;
     const collection = database.collection(name);
-    return collection.bulkWrite(items.map(item => ({
-      replaceOne: { filter: { _id: stableIdOf(name, item) }, replacement: { ...item, _id: stableIdOf(name, item) }, upsert: true }
-    })), { ordered: false });
-  });
+    if (name === "media") {
+      // Media documents are content-addressed (_id = sha1 of the bytes) and
+      // therefore immutable. Upload only entries this instance has never
+      // persisted; entries loaded from Mongo carry no dataUrl (projection)
+      // and must never be written back, or blobs would be wiped.
+      const known = index.get("media") || new Set();
+      const fresh = items.filter(item => item.dataUrl && !known.has(stableIdOf(name, item)));
+      if (fresh.length) {
+        writes.push(collection.bulkWrite(fresh.map(item => ({
+          replaceOne: { filter: { _id: stableIdOf(name, item) }, replacement: { ...item, _id: stableIdOf(name, item) }, upsert: true }
+        })), { ordered: false }).then(() => {
+          const set = index.get("media") || new Set();
+          fresh.forEach(item => set.add(stableIdOf(name, item)));
+          index.set("media", set);
+        }));
+      }
+      continue;
+    }
+    const seen = index.get(name) || new Map();
+    const changed = [];
+    for (const item of items) {
+      const key = stableIdOf(name, item);
+      const json = JSON.stringify(item);
+      if (seen.get(key) !== json) changed.push({ key, json, item });
+    }
+    if (changed.length) {
+      writes.push(collection.bulkWrite(changed.map(({ key, item }) => ({
+        replaceOne: { filter: { _id: key }, replacement: { ...item, _id: key }, upsert: true }
+      })), { ordered: false }).then(() => {
+        const map = index.get(name) || new Map();
+        changed.forEach(({ key, json }) => map.set(key, json));
+        index.set(name, map);
+      }));
+    }
+  }
   // Diff deletions: everything loaded but no longer present is removed.
   // Without this, sign-out / session-pruning / account deletion never reach
   // Mongo and the records resurrect on the next load.
@@ -560,14 +701,17 @@ async function persistDb(db) {
       const gone = [...loadedKeys[name]].filter(key => !currentKeys[name].has(key));
       if (gone.length) {
         writes.push(database.collection(name).deleteMany({ _id: { $in: gone } }));
+        if (name === "media") { const set = index.get("media"); if (set) gone.forEach(key => set.delete(key)); }
+        else { const map = index.get(name); if (map) gone.forEach(key => map.delete(key)); }
       }
     }
   }
   await Promise.all(writes);
   loadedKeys = currentKeys;
-  // Writes are the only mutation path; refresh the snapshot so the next
-  // loadDb within the TTL serves exactly what was just persisted.
-  dbCache = { db: structuredClone(db), loadedAt: Date.now() };
+  // Writes are the only mutation path; share the live snapshot so the next
+  // loadDb within the TTL serves exactly what was just persisted (and so
+  // in-request bookkeeping like read receipts survives in memory).
+  dbCache = { db, loadedAt: Date.now() };
 }
 
 // At-rest document shape: heavy blobs live in the `media` collection;
@@ -612,6 +756,42 @@ function dbRefsShape(db) {
   return db;
 }
 
+// Merge duplicate direct conversations between the same two users (created
+// before conversation creation was pair-keyed). Keeps the oldest conversation
+// and re-parents all messages into it; drops the duplicates. Records what it
+// touched on db.__dedupe so the Mongo load path can persist the heal: dropped
+// documents must be DELETED and re-parented messages REWRITTEN even though
+// diff-based persistence would otherwise consider them unchanged.
+function dedupeDirectConversations(db) {
+  const byPair = new Map();
+  const merged = new Set();
+  const touchedMessages = new Set();
+  const newPairKeys = new Set();
+  for (const conversation of db.conversations) {
+    if (!Array.isArray(conversation.memberIds) || conversation.memberIds.length !== 2) continue;
+    const key = conversation.pairKey || conversationPairKey(conversation.memberIds[0], conversation.memberIds[1]);
+    if (conversation.pairKey !== key) { conversation.pairKey = key; newPairKeys.add(conversation.id); }
+    const existing = byPair.get(key);
+    if (!existing) { byPair.set(key, conversation); continue; }
+    const keep = String(existing.createdAt || existing.updatedAt || "") <= String(conversation.createdAt || conversation.updatedAt || "") ? existing : conversation;
+    const drop = keep === existing ? conversation : existing;
+    byPair.set(key, keep);
+    for (const message of db.messages) {
+      if (message.conversationId === drop.id) { message.conversationId = keep.id; touchedMessages.add(message.id); }
+    }
+    const newerReads = drop.reads || {};
+    keep.reads = keep.reads || {};
+    for (const [userId, stamp] of Object.entries(newerReads)) {
+      if (String(keep.reads[userId] || "") < String(stamp)) keep.reads[userId] = stamp;
+    }
+    if (String(drop.updatedAt || "") > String(keep.updatedAt || "")) keep.updatedAt = drop.updatedAt;
+    newPairKeys.add(keep.id);
+    merged.add(drop.id);
+  }
+  if (merged.size) db.conversations = db.conversations.filter(conversation => !merged.has(conversation.id));
+  db.__dedupe = { droppedConversations: [...merged], touchedMessages: [...touchedMessages], newPairKeys: [...newPairKeys] };
+}
+
 function readDbShape(db) {
   db.users ||= [];
   db.sessions ||= [];
@@ -627,6 +807,7 @@ function readDbShape(db) {
   db.connections ||= [];
   db.passwordResets ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
+  dedupeDirectConversations(db);
   db.bookings.forEach(booking => {
     if (!Array.isArray(booking.paymentShares) || booking.paymentShares.length !== booking.splitCount) {
       const base = Math.floor(booking.amount / booking.splitCount);
@@ -1035,12 +1216,36 @@ function listingPayload(listing, db, user) {
   };
 }
 
+// Direct conversations are keyed by the SORTED participant pair, so the same
+// two users always resolve to exactly one conversation no matter which
+// property or profile the "Message" action started from. Listing context
+// lives on messages (listingId), never on the conversation, so a new
+// property enquiry lands in the existing chat instead of a duplicate.
+function conversationPairKey(userIdA, userIdB) {
+  return [userIdA, userIdB].sort().join("::");
+}
+function findDirectConversation(db, userIdA, userIdB) {
+  const key = conversationPairKey(userIdA, userIdB);
+  return db.conversations.find(item => item.pairKey === key)
+    // Fallback for conversations created before pair keys existed.
+    || db.conversations.find(item => item.memberIds.length === 2
+      && item.memberIds.includes(userIdA) && item.memberIds.includes(userIdB));
+}
+
 function conversationPayload(conversation, db, viewerId) {
   const otherId = conversation.memberIds.find(memberId => memberId !== viewerId);
   const other = db.users.find(item => item.id === otherId);
   const messages = db.messages.filter(message => message.conversationId === conversation.id);
   const last = [...messages].sort((a,b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
-  const listing = conversation.listingId ? db.listings.find(item => item.id === conversation.listingId) : null;
+  // Pair-keyed conversations carry no listingId; fall back to the most
+  // recent property referenced in the thread (scanning back, since the
+  // newest message may be a plain text or media message) so the chat
+  // keeps its context tag.
+  let recentListingId = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].listingId) { recentListingId = messages[i].listingId; break; }
+  }
+  const listing = db.listings.find(item => item.id === (conversation.listingId || recentListingId)) || null;
   const readUpTo = conversation.reads?.[viewerId] || EPOCH;
   const unread = messages.filter(message => message.senderId !== viewerId && message.createdAt > readUpTo).length;
   return {
@@ -1185,7 +1390,11 @@ async function api(req, res, url) {
         const tenant = db.users.find(item => item.id === booking.tenantId);
         return { ...booking, propertyTitle: listing ? listing.title : "Removed property", tenantName: tenant ? tenant.name : "Student" };
       }) : [];
-    const inspections = user ? db.inspections.filter(item => item.tenantId === user.id || item.ownerId === user.id) : [];
+    const inspections = user ? db.inspections.filter(item => item.tenantId === user.id || item.ownerId === user.id).map(item => {
+      const listing = db.listings.find(l => l.id === item.listingId);
+      const tenant = db.users.find(u => u.id === item.tenantId);
+      return { ...item, listingTitle: listing ? listing.title : "Removed property", tenantName: tenant ? tenant.name : "Student" };
+    }) : [];
     const roommateCandidates = user && user.role === "tenant" ? db.users
       .filter(item => item.id !== user.id && (item.role === "tenant" || item.hosting === true))
       .map(candidate => ({ ...profileView(candidate), score: matchScoreFor(db, user, candidate), connection: connectionStateFor(db, user.id, candidate.id) }))
@@ -1615,6 +1824,26 @@ async function api(req, res, url) {
     return json(res,201,{inspection});
   }
 
+  const inspectionRespondMatch = route.match(/^\/api\/inspections\/([^/]+)\/respond$/);
+  if (inspectionRespondMatch && method === "POST") {
+    const account = requireUser(req,res,db); if (!account) return;
+    const inspection = db.inspections.find(item => item.id === inspectionRespondMatch[1]);
+    if (!inspection) return error(res,404,"Inspection request not found");
+    if (inspection.ownerId !== account.id) return error(res,403,"Only the property owner can respond to this request");
+    if (inspection.status !== "requested") return error(res,409,"This request was already responded to");
+    const body = await parseBody(req);
+    const decision = body.decision === "approve" ? "approved" : body.decision === "decline" ? "declined" : null;
+    if (!decision) return error(res,400,"Decision must be approve or decline");
+    inspection.status = decision;
+    inspection.responseNote = String(body.note || "").trim().slice(0,300) || null;
+    inspection.respondedAt = new Date().toISOString();
+    const listing = db.listings.find(item => item.id === inspection.listingId);
+    const listingTitle = listing ? listing.title : "your requested home";
+    notify(db, inspection.tenantId, { type:"inspection", title:`Inspection ${decision}`, body:`Your inspection request for ${listingTitle} was ${decision}.${inspection.responseNote ? " Note: " + inspection.responseNote : ""}`, actorId:account.id, meta:{ inspectionId:inspection.id, listingId:inspection.listingId } });
+    await persistDb(db);
+    return json(res,200,{ inspection });
+  }
+
   if (route === "/api/reports" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
     if (!rateLimit(`user:${account.id}:reports`, 5, 3_600_000)) return error(res, 429, "Too many reports sent. Try again later.");
@@ -1651,15 +1880,42 @@ async function api(req, res, url) {
     const listing = db.listings.find(item => item.id === contactMatch[1]);
     if (!listing) return error(res,404,"Property not found");
     if (listing.ownerId === account.id) return error(res,400,"This is your own listing");
-    let conversation = db.conversations.find(item => item.listingId === listing.id && item.memberIds.includes(account.id) && item.memberIds.includes(listing.ownerId));
+    // Idempotent by participant PAIR: messaging the same host from a different
+    // property reuses the existing conversation. The automated opener is sent
+    // exactly once (guarded by the conversation's opener marker), and each
+    // new property gets a contextual follow-up inside the SAME thread.
+    let conversation = findDirectConversation(db, account.id, listing.ownerId);
+    const openerText = `Hi, I am interested in ${listing.title}. Is it still available?`;
+    let createdConversation = false;
+    let sentOpener = false;
     if (!conversation) {
-      conversation = {id:id("con"),memberIds:[account.id,listing.ownerId],listingId:listing.id,updatedAt:new Date().toISOString(),reads:{}};
+      conversation = {
+        id:id("con"),memberIds:[account.id,listing.ownerId],listingId:null,
+        pairKey:conversationPairKey(account.id,listing.ownerId),
+        updatedAt:new Date().toISOString(),reads:{},openerFor:null
+      };
       db.conversations.push(conversation);
-      db.messages.push({id:id("msg"),conversationId:conversation.id,senderId:account.id,text:`Hi, I am interested in ${listing.title}. Is it still available?`,createdAt:new Date().toISOString()});
-      notify(db, listing.ownerId, { type:"message", title:`New message from ${account.name}`, body:`Hi, I am interested in ${listing.title}. Is it still available?`, actorId:account.id, meta:{ conversationId:conversation.id } });
+      createdConversation = true;
     }
+    const nowIso = new Date().toISOString();
+    if (!conversation.openerFor) {
+      conversation.openerFor = listing.id;
+      sentOpener = true;
+      db.messages.push({id:id("msg"),conversationId:conversation.id,senderId:account.id,listingId:listing.id,text:openerText,createdAt:nowIso});
+      const owner = db.users.find(item => item.id === listing.ownerId);
+      if (owner?.notifyMessages !== false) {
+        notify(db, listing.ownerId, { type:"message", title:`New message from ${account.name}`, body:openerText, actorId:account.id, meta:{ conversationId:conversation.id } });
+      }
+    } else if (conversation.openerFor !== listing.id) {
+      db.messages.push({id:id("msg"),conversationId:conversation.id,senderId:account.id,listingId:listing.id,text:openerText,createdAt:nowIso});
+      const owner = db.users.find(item => item.id === listing.ownerId);
+      if (owner?.notifyMessages !== false) {
+        notify(db, listing.ownerId, { type:"message", title:`New message from ${account.name}`, body:openerText, actorId:account.id, meta:{ conversationId:conversation.id } });
+      }
+    }
+    conversation.updatedAt = nowIso;
     await persistDb(db);
-    return json(res,200,{conversationId:conversation.id});
+    return json(res,200,{ conversationId:conversation.id, created:createdConversation, sentOpener });
   }
 
   const messagesMatch = route.match(/^\/api\/conversations\/([^/]+)\/messages$/);
@@ -1668,8 +1924,14 @@ async function api(req, res, url) {
     const conversation = db.conversations.find(item => item.id === messagesMatch[1] && item.memberIds.includes(account.id));
     if (!conversation) return error(res,404,"Conversation not found");
     const messages = db.messages.filter(item => item.conversationId === conversation.id).sort((a,b) => a.createdAt.localeCompare(b.createdAt));
-    conversation.reads[account.id] = new Date().toISOString();
-    await persistDb(db);
+    // Read receipt: flush lazily instead of rewriting the whole database on
+    // every chat poll tick (the poll queued every other click behind a full
+    // persist, which is the main reason the app felt frozen).
+    const readAt = new Date().toISOString();
+    if (String(conversation.reads[account.id] || "") < readAt) {
+      conversation.reads[account.id] = readAt;
+      markDirty();
+    }
     return json(res,200,{conversation:conversationPayload(conversation, db, account.id),messages:messages.map(message => ({ ...message, attachments: attachmentsOut(message.attachments) }))});
   }
   if (messagesMatch && method === "POST") {
@@ -1751,10 +2013,12 @@ async function api(req, res, url) {
     const body = await parseBody(req);
     const candidate = db.users.find(item => item.id === body.userId);
     if (!candidate || candidate.id === account.id) return error(res,404,"User not found");
-    let conversation = db.conversations.find(item => !item.listingId && item.memberIds.includes(account.id) && item.memberIds.includes(candidate.id));
+    let conversation = findDirectConversation(db, account.id, candidate.id);
     if (!conversation) {
-      conversation = {id:id("con"),memberIds:[account.id,candidate.id],listingId:null,updatedAt:new Date().toISOString(),reads:{}};
+      conversation = {id:id("con"),memberIds:[account.id,candidate.id],listingId:null,pairKey:conversationPairKey(account.id,candidate.id),updatedAt:new Date().toISOString(),reads:{},openerFor:null};
       db.conversations.push(conversation);
+    } else if (!conversation.pairKey) {
+      conversation.pairKey = conversationPairKey(account.id, candidate.id);
     }
     await persistDb(db);
     return json(res,200,{conversationId:conversation.id,conversation:conversationPayload(conversation, db, account.id)});
@@ -1776,9 +2040,9 @@ async function api(req, res, url) {
     const body = await parseBody(req);
     const candidate = db.users.find(item => item.id === body.userId && (item.role === "tenant" || item.hosting === true));
     if (!candidate || candidate.id === account.id) return error(res,404,"Student not found");
-    let conversation = db.conversations.find(item => !item.listingId && item.memberIds.includes(account.id) && item.memberIds.includes(candidate.id));
+    let conversation = findDirectConversation(db, account.id, candidate.id);
     if (!conversation) {
-      conversation = {id:id("con"),memberIds:[account.id,candidate.id],listingId:null,updatedAt:new Date().toISOString(),reads:{}};
+      conversation = {id:id("con"),memberIds:[account.id,candidate.id],listingId:null,pairKey:conversationPairKey(account.id,candidate.id),updatedAt:new Date().toISOString(),reads:{},openerFor:null};
       db.conversations.push(conversation);
       db.messages.push({id:id("msg"),conversationId:conversation.id,senderId:account.id,text:"Hi! Offkay matched us as potential roommates. Would you like to chat?",createdAt:new Date().toISOString()});
       if (candidate.notifyMessages !== false) {
@@ -2242,10 +2506,18 @@ function serveStatic(req,res,url) {
   fs.stat(requested,(err,stats)=>{
     if (err || !stats.isFile()) {
       const index = path.join(PUBLIC_DIR,"index.html");
-      res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","X-Content-Type-Options":"nosniff"});
+      res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-cache","X-Content-Type-Options":"nosniff"});
       return fs.createReadStream(index).pipe(res);
     }
-    res.writeHead(200,{"Content-Type":mime[path.extname(requested)] || "application/octet-stream","Cache-Control":"no-cache","X-Content-Type-Options":"nosniff"});
+    // Content fingerprint: unchanged files answer 304 so the browser reuses
+    // its copy of app.js / app.css / images instead of re-downloading them on
+    // every load. no-cache keeps revalidation instant after a deploy.
+    const etag = "\"" + stats.size.toString(36) + "-" + stats.mtimeMs.toString(36) + "\"";
+    if (req.headers["if-none-match"] === etag) {
+      res.writeHead(304,{ ETag: etag, "Cache-Control":"no-cache" });
+      return res.end();
+    }
+    res.writeHead(200,{"Content-Type":mime[path.extname(requested)] || "application/octet-stream","Cache-Control":"no-cache",ETag:etag,"X-Content-Type-Options":"nosniff"});
     fs.createReadStream(requested).pipe(res);
   });
 }

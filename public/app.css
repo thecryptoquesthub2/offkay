@@ -158,7 +158,7 @@ button.roommate-avatar{border:0;color:white;font-weight:750;background:var(--pri
 .map-attribution{position:absolute;right:6px;bottom:4px;font-size:9px;color:#5a6b63;background:rgba(255,255,255,.82);padding:2px 6px;border-radius:6px}.map-stack{display:grid;gap:14px}.map-card{border-radius:20px;overflow:hidden;border:1px solid var(--border)}.map-card .osm-embed{border-radius:0;border-bottom:1px solid var(--border)}.map-card-info{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px}.map-card-info b{display:block;font-size:14px}.map-card-info span{font-size:11px;color:var(--text-secondary)}.map-placeholder{height:240px;display:grid;place-items:center;color:var(--muted);background:var(--secondary)}
 
 /* Messages: people discovery */
-.discover-block{margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:grid;gap:9px}.discover-block h3{margin:0;font-size:12px;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)}.person-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px}.person-main{min-width:0;display:flex;align-items:center;gap:11px;padding:7px 8px;border:0;border-radius:14px;background:transparent;color:var(--text);text-align:left}.person-main:hover{background:var(--secondary)}.person-main b{display:block;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.person-main .avatar{flex:0 0 auto;width:34px;height:34px;border-radius:12px;font-size:12px}.person-main .conversation-text{min-width:0;display:block}.person-main span{font-size:11px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.no-conv-hint{font-size:11px;color:var(--muted);padding:6px 2px}
+.discover-block{margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:grid;gap:9px}.discover-block h3{margin:0;font-size:12px;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)}.person-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px}.person-main{min-width:0;display:flex;align-items:center;gap:11px;padding:7px 8px;border:0;border-radius:14px;background:transparent;color:var(--text);text-align:left}.person-main:hover{background:var(--secondary)}.person-main b{display:block;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.person-main .avatar{flex:0 0 auto;width:34px;height:34px;border-radius:12px;font-size:12px}.person-main .conversation-text{min-width:0;display:block}.person-main span{font-size:11px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.no-conv-hint{font-size:11px;color:var(--muted);padding:6px 2px}.notification-list-loading{font-size:12px;color:var(--muted);padding:18px 4px;text-align:center}
 
 /* Payment callback page */
 .callback-shell{min-height:100svh;display:grid;place-items:center;padding:24px}.callback-card{width:min(440px,100%);border-radius:28px;border:1px solid var(--border);background:var(--surface-strong);padding:36px 26px;text-align:center;display:grid;gap:12px}.callback-icon{width:74px;height:74px;margin:0 auto;border-radius:50%;display:grid;place-items:center;font-size:30px;background:var(--secondary);color:var(--primary)}.callback-icon.ok{background:color-mix(in srgb,var(--success) 20%,white);color:var(--success)}.callback-icon.bad{background:color-mix(in srgb,var(--danger) 12%,white);color:var(--danger)}.callback-card h1{font-size:22px;letter-spacing:-.03em;margin:0}.callback-card p{color:var(--text-secondary);font-size:14px;line-height:1.55;margin:0}.callback-actions{margin-top:8px}
@@ -704,3 +704,62 @@ select.filter-pill{padding-right:32px;background-image:url("data:image/svg+xml;c
   .detail-facts .fact:nth-child(n+4){display:none}
   .detail-thumbs{gap:6px}
 }
+
+/* ---- Host dashboard: composed workspace (properties primary, requests aside) ---- */
+.home-main.host-home{max-width:none}
+.host-columns{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;align-items:start}
+.host-primary{min-width:0}
+.host-side{min-width:0;display:grid;gap:14px}
+.host-side .section-head{margin:22px 0 10px}
+.host-requests{border-radius:20px;padding:6px;overflow:hidden}
+.host-request-row{display:flex;align-items:center;gap:11px;padding:11px 12px;border-bottom:1px solid var(--line)}
+.host-request-row:last-child{border-bottom:0}
+.host-request-row .metric-icon{flex:0 0 auto;width:32px;height:32px;border-radius:10px}
+.host-request-row .metric-icon svg{width:16px;height:16px}
+.inspection-copy{min-width:0;display:grid;gap:3px;flex:1}
+.inspection-copy b{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.inspection-copy small{font-size:10px;color:var(--muted);text-transform:capitalize}
+@media(min-width:1120px){
+  .host-columns{grid-template-columns:minmax(0,1fr) 348px;gap:24px}
+  .host-side{position:sticky;top:24px}
+}
+@media(max-width:1119px){
+  /* Properties first, requests second - a natural single-column flow. */
+  .host-columns{gap:6px}
+}
+/* ---- Property rows: relax the 680px min so rows breathe on desktop ---- */
+@media(min-width:850px){.property-row{min-width:0}.property-table{overflow:visible}}
+@media(max-width:849px){.property-row{min-width:560px}}
+/* ---- Inspection lifecycle UI ---- */
+.inspection-status{border-radius:999px;padding:6px 10px;font-size:9px;font-weight:800;width:max-content;flex:0 0 auto;background:var(--mint);color:var(--green)}
+.inspection-status.approved{background:var(--mint);color:var(--green)}
+.inspection-status.declined{background:#fdecec;color:var(--danger)}
+.inspection-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.inspection-actions .button{padding:8px 12px;font-size:11px}
+.inspection-note{display:block;margin-top:7px;font-size:10px;color:var(--muted)}
+.inspection-row{align-items:start}
+.inspection-row>.inspection-status{margin-top:2px}
+/* ---- Chat day dividers (WhatsApp-style scan anchors) ---- */
+.chat-day-divider{display:grid;place-items:center;margin:10px 0 2px}
+.chat-day-divider span{border-radius:999px;padding:5px 12px;background:var(--mint);color:var(--green);font-size:10px;font-weight:750;letter-spacing:.02em}
+/* ---- Host explore: use the desktop width without giant cards ---- */
+.explore-main.host-explore{max-width:none}
+.explore-main.host-explore .results-head{max-width:none}
+@media(min-width:1200px){
+  .explore-main.host-explore ~ *{}
+}
+@media(max-width:849px){
+  .host-request-row{padding:10px}
+  .inspection-actions .button{flex:1;min-width:76px}
+  .chat-day-divider{margin:8px 0 2px}
+}
+/* Dark themes keep the same structure; pill colors follow the theme tokens. */
+body[data-theme="midnight"] .inspection-status{background:rgba(36,170,118,.16);color:#7fe0b6}
+body[data-theme="midnight"] .inspection-status.declined{background:rgba(198,84,84,.18);color:#f0a2a2}
+body[data-theme="midnight"] .chat-day-divider span{background:rgba(36,170,118,.14);color:#7fe0b6}
+body[data-theme="forest"] .inspection-status,body[data-theme="slate"] .inspection-status,body[data-theme="clay"] .inspection-status{background:color-mix(in srgb,var(--green) 12%,transparent);color:var(--green)}
+body[data-theme="forest"] .inspection-status.declined,body[data-theme="slate"] .inspection-status.declined,body[data-theme="clay"] .inspection-status.declined{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger)}
+body[data-theme="forest"] .chat-day-divider span,body[data-theme="slate"] .chat-day-divider span,body[data-theme="clay"] .chat-day-divider span{background:color-mix(in srgb,var(--green) 12%,transparent);color:var(--green)}
+
+/* Quiet in-place hint while admin queue/history load inside the shell. */
+.admin-loading-hint{padding:26px 4px;text-align:center;color:var(--muted,#7a8a80);font-size:.86rem}

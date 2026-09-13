@@ -37,6 +37,32 @@ const avatarHtml = (name, avatarUrl, cls = "") => avatarUrl
   : `<span class="avatar ${cls}">${initials(name)}</span>`;
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[char]));
 const time = iso => new Intl.DateTimeFormat("en-NG",{hour:"numeric",minute:"2-digit"}).format(new Date(iso));
+// Scannable relative stamp for conversation rows: "10:42 AM" today,
+// "Yesterday", then "Sep 12" / "Sep 12, 2025".
+const relativeTime = iso => {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const t = date.getTime();
+  if (t >= startOfToday) return time(iso);
+  if (t >= startOfToday - 86400000) return "Yesterday";
+  return now.getFullYear() === date.getFullYear()
+    ? new Intl.DateTimeFormat("en-NG",{month:"short",day:"numeric"}).format(date)
+    : new Intl.DateTimeFormat("en-NG",{month:"short",day:"numeric",year:"numeric"}).format(date);
+};
+// Day label for chat dividers: groups messages into Today / Yesterday / date.
+const messageDayLabel = iso => {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const t = date.getTime();
+  if (t >= startOfToday) return "Today";
+  if (t >= startOfToday - 86400000) return "Yesterday";
+  return new Intl.DateTimeFormat("en-NG",{month:"short",day:"numeric",year:"numeric"}).format(date);
+};
 const firstName = name => String(name || "").split(" ")[0];
 const mapUrl = listing => {
   const coords = listingCoords(listing);
@@ -122,12 +148,29 @@ function verificationPanel(statusLabel, submission) {
 }
 const dbDownMessage = () => "Offkay can't reach its database right now - it usually reconnects within a minute. Refresh in a moment.";
 
+// Every call gets a timeout so a stalled connection can never leave a button
+// hanging for tens of seconds - the fetch rejects and normal error handling
+// shows a message instead of freezing the UI. Environments without
+// AbortController (very old browsers) fall back to a plain fetch.
+function fetchWithTimeout(url, options = {}, timeoutMs = 12_000) {
+  if (typeof AbortController !== "function") return fetch(url, options);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 async function request(url, options = {}) {
-  const response = await fetch(url, {
-    credentials: "same-origin",
-    headers: options.body ? {"Content-Type":"application/json",...(options.headers || {})} : options.headers,
-    ...options
-  });
+  let response;
+  try {
+    response = await fetchWithTimeout(url, {
+      credentials: "same-origin",
+      headers: options.body ? {"Content-Type":"application/json",...(options.headers || {})} : options.headers,
+      ...options
+    });
+  } catch (err) {
+    if (err && err.name === "AbortError") throw new Error("Request timed out - check your connection and try again.");
+    throw err;
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 && state.user) {
@@ -428,11 +471,13 @@ function renderNotificationDot() {
 }
 
 let badgePoll = null;
+let badgePollBusy = false;
 function startBadgePolling() {
   stopBadgePolling();
   if (!state.user) return;
   badgePoll = setInterval(async () => {
-    if (!state.user || document.hidden) return;
+    if (!state.user || document.hidden || badgePollBusy) return;
+    badgePollBusy = true;
     try {
       const data = await request("/api/badges");
       const changed = data.messages !== state.unreadMessages || data.notifications !== state.notificationsUnread || (data.adminPending || 0) !== (state.adminPending || 0);
@@ -441,7 +486,7 @@ function startBadgePolling() {
       state.adminPending = data.adminPending || 0;
       renderNotificationDot();
       if (changed) refreshData(false).catch(() => {});
-    } catch { /* transient network errors stay silent */ }
+    } catch { /* transient network errors stay silent */ } finally { badgePollBusy = false; }
   }, 8000);
 }
 function stopBadgePolling() {
@@ -461,22 +506,30 @@ function notificationRow(item) {
 
 async function openNotifications() {
   if (!state.user) return;
+  // Render instantly from whatever the app already knows, then refresh in
+  // place - the panel never waits on the network before appearing.
+  modal(`
+    <div class="modal-head"><div><span class="eyebrow">Notifications</span><h2>Activity</h2><p>Connection requests, messages, inspections, and booking updates.</p></div><button class="close-button">&times;</button></div>
+    <div class="notification-list">${state.notifications.length ? state.notifications.map(notificationRow).join("") : `<div class="notification-list-loading">Loading…</div>`}</div>
+    ${state.notifications.length ? `<button class="button subtle wide" data-action="mark-notifications-read">Mark all as read</button>` : ""}`);
   try {
     const data = await request("/api/notifications");
     state.notifications = data.notifications;
     state.notificationsUnread = data.unread;
-  } catch (error) { return toast(error.message); }
-  const unreadIds = state.notifications.filter(item => !item.read).map(item => item.id);
-  modal(`
-    <div class="modal-head"><div><span class="eyebrow">Notifications</span><h2>Activity</h2><p>Connection requests, messages, inspections, and booking updates.</p></div><button class="close-button">&times;</button></div>
-    <div class="notification-list">${state.notifications.length ? state.notifications.map(notificationRow).join("") : emptyState("Nothing yet","Requests, messages, and booking updates will land here.")}</div>
-    ${state.notifications.length ? `<button class="button subtle wide" data-action="mark-notifications-read">Mark all as read</button>` : ""}`);
-  renderNotificationDot();
-  if (unreadIds.length) {
+    const unreadIds = data.notifications.filter(item => !item.read).map(item => item.id);
+    const root = $("#modalRoot");
+    if (!root.classList.contains("open")) return; // closed while fetching
+    const list = root.querySelector(".notification-list");
+    if (list) list.innerHTML = data.notifications.length ? data.notifications.map(notificationRow).join("") : emptyState("Nothing yet","Requests, messages, and booking updates will land here.");
+    const markBtn = root.querySelector('[data-action="mark-notifications-read"]');
+    if (unreadIds.length && !markBtn) {
+      list?.insertAdjacentHTML("afterend", `<button class="button subtle wide" data-action="mark-notifications-read">Mark all as read</button>`);
+    }
+    renderNotificationDot();
     request("/api/notifications/read",{method:"POST",body:JSON.stringify({ids:unreadIds})})
       .then(() => { state.notificationsUnread = 0; renderNotificationDot(); })
       .catch(() => {});
-  }
+  } catch (error) { toast(error.message); }
 }
 
 async function markNotificationsRead() {
@@ -641,15 +694,34 @@ function landlordHome() {
   const mine = state.ownListings;
   const myBookings = state.bookings.filter(item => item.ownerId === state.user.id);
   const revenue = myBookings.filter(item => item.status === "paid").reduce((sum,item)=>sum+item.amount,0);
+  const pendingRequests = (state.inspections || []).filter(item => item.ownerId === state.user.id && item.status === "requested");
+  const activeBookings = myBookings.filter(item => item.status === "paid");
   return `
+    <div class="home-main host-home">
     <div class="page-head"><div><span class="eyebrow">Property dashboard</span><h1>Welcome back, ${esc(firstName(state.user.name))}.</h1><p>Manage listings, enquiries, and tenant bookings from one place.</p></div><div class="page-actions"><button class="button primary" data-action="new-listing">${icon("plus")} Add property</button></div></div>
     <div class="metrics">
       <div class="metric glass"><div class="metric-top"><span>Active properties</span><span class="metric-icon">${icon("home")}</span></div><strong>${mine.filter(item=>item.status==="active").length}</strong><small>${mine.filter(item=>!item.verified).length} awaiting verification</small></div>
       <div class="metric glass"><div class="metric-top"><span>Total enquiries</span><span class="metric-icon">${icon("messages")}</span></div><strong>${state.conversations.length}</strong><small>Students who have contacted you</small></div>
       <div class="metric glass"><div class="metric-top"><span>Confirmed revenue</span><span class="metric-icon">${icon("lock")}</span></div><strong>${money(revenue)}</strong><small>Platform fee currently set to 0%</small></div>
     </div>
-    <div class="section-head"><div><h2>Your properties</h2><p>Listings and their current publishing status.</p></div><button class="link-button" data-tab="explore">Manage all &rarr;</button></div>
-    ${propertyTable(mine)}`;
+    <div class="host-columns">
+      <section class="host-primary">
+        <div class="section-head"><div><h2>Your properties</h2><p>Listings and their current publishing status.</p></div><button class="link-button" data-tab="explore">Manage all &rarr;</button></div>
+        ${propertyTable(mine)}
+      </section>
+      <aside class="host-side">
+        ${pendingRequests.length ? `
+        <div class="section-head"><div><h2>Tour requests</h2><p>${pendingRequests.length} awaiting your response.</p></div><button class="link-button" data-action="open-inspections">Review all &rarr;</button></div>
+        <div class="host-requests glass">${pendingRequests.slice(0,3).map(inspection=>`<div class="host-request-row"><span class="metric-icon">${icon("calendar")}</span><span class="inspection-copy"><b>${esc(inspection.listingTitle || "House inspection")}</b><small>${esc(inspection.tenantName || "Student")} &middot; ${esc(inspection.preferredDate || "Date pending")} &middot; ${esc(inspection.timeWindow)}</small></span>${inspectionStatusPill(inspection.status)}</div>`).join("")}</div>` : ""}
+        ${activeBookings.length ? `
+        <div class="section-head"><div><h2>Confirmed bookings</h2><p>Paid groups moving in.</p></div></div>
+        <div class="host-requests glass">${activeBookings.slice(0,3).map(booking=>{
+          const listing = state.listings.find(item=>item.id===booking.listingId) || mine.find(item=>item.id===booking.listingId);
+          return `<div class="host-request-row"><span class="metric-icon">${icon("home")}</span><span class="inspection-copy"><b>${esc(listing?.title || "Offkay home")}</b><small>${esc(booking.tenantName || "Student")} &middot; ${money(booking.amount)}</small></span><span class="inspection-status approved">Paid</span></div>`;
+        }).join("")}</div>` : ""}
+      </aside>
+    </div>
+    </div>`;
 }
 
 function renderHome() {
@@ -662,7 +734,7 @@ function propertyTable(items) {
     <div class="property-row header"><span>Property</span><span>Annual rent</span><span>Type</span><span>Status</span><span></span></div>
     ${items.map(item=>`<div class="property-row">
       <div class="property-name"><span class="property-thumb"></span><span><b>${esc(item.title)}</b><span>${esc(item.area)}</span></span></div>
-      <b>${money(item.price)}</b><span>${esc(item.type)}</span>
+      <b>${money(item.price)}</b><span class="property-type">${esc(item.type)}</span>
       <span class="table-status ${item.status==="active"?"":"pending"}">${item.status==="active"?(item.verified?"Published":"Under review"):"Hidden"}</span>
       <span class="property-actions"><button class="icon-more" data-action="view-listing" data-id="${item.id}" aria-label="Open property">&rarr;</button><button class="icon-more" data-action="edit-listing" data-id="${item.id}" aria-label="Edit property">&#9998;</button><button class="icon-more danger" data-action="confirm-delete-listing" data-id="${item.id}" aria-label="Delete property">&times;</button></span>
     </div>`).join("")}
@@ -751,7 +823,7 @@ function renderExplore() {
   const homeFilters = state.filters.homes;
   const roommateFilters = state.filters.roommates;
   const habitOptions = HABIT_OPTIONS;
-  $("#tab-explore").innerHTML = `<div class="explore-main">
+  $("#tab-explore").innerHTML = `<div class="explore-main${hosting?" host-explore":""}">
     ${hosting ? `<div class="page-head"><div><span class="eyebrow">Host tools</span><h1>Manage your places.</h1><p>Review your properties and incoming inspection requests.</p></div><div class="page-actions"><button class="button subtle" data-action="open-inspections">${icon("calendar")} Inspections</button><button class="button primary" data-action="new-listing">${icon("plus")} Add a house</button></div></div>` : `
     <header class="explore-hero">
       <span class="explore-eyebrow">Explore Offkay</span>
@@ -851,7 +923,7 @@ function conversationRow(conversation) {
   return `<button class="conversation ${active?"active":""}" data-action="open-conversation" data-id="${conversation.id}">
     ${avatarHtml(conversation.other?.name, conversation.other?.avatarUrl)}
     <span class="conversation-text"><b>${esc(conversation.other?.name || "Offkay user")}</b><span>${esc(conversation.lastMessage?.text || "Start the conversation")}</span></span>
-    <time>${conversation.lastMessage ? time(conversation.lastMessage.createdAt) : ""}${conversation.unread ? `<i class="unread-dot">${conversation.unread}</i>` : ""}</time>
+    <time>${conversation.lastMessage ? relativeTime(conversation.lastMessage.createdAt) : ""}${conversation.unread ? `<i class="unread-dot">${conversation.unread}</i>` : ""}</time>
   </button>`;
 }
 
@@ -1029,18 +1101,21 @@ function chatMarkup(conversation) {
 }
 
 let chatPoll = null;
+let chatPollBusy = false;
 function setChatPolling(conversationId) {
   clearInterval(chatPoll);
   chatPoll = null;
   if (!conversationId || !state.user) return;
   chatPoll = setInterval(async () => {
-    if (!state.user || state.activeConversation !== conversationId) return;
+    if (!state.user || state.activeConversation !== conversationId || chatPollBusy) return;
+    chatPollBusy = true;
     try {
       const data = await request(`/api/conversations/${conversationId}/messages`);
       if (state.activeConversation !== conversationId) return;
       const known = state.messages.map(message=>message.id).join(",");
       const incoming = data.messages.map(message=>message.id).join(",");
       state.messages = data.messages;
+      if (state.messagesByConversation) state.messagesByConversation[conversationId] = data.messages;
       if (known !== incoming) renderMessageList(data.messages);
       // Live updates while the chat is open: preview, list order, badges.
       const fresh = state.conversations.find(item=>item.id===conversationId);
@@ -1049,13 +1124,9 @@ function setChatPolling(conversationId) {
       if (rows && fresh) {
         rows.innerHTML = visibleConversations().map(conversationRow).join("");
       }
-      request("/api/badges").then(b => {
-        state.unreadMessages = b.messages;
-        state.notificationsUnread = b.notifications;
-        if (b.adminPending !== undefined) state.adminPending = b.adminPending;
-        renderNotificationDot();
-      }).catch(() => {});
-    } catch { /* keep polling silently */ }
+      // Badge counts refresh on their own 8s cadence; a second badges call
+      // here doubled request volume and stacked behind a slow server.
+    } catch { /* keep polling silently */ } finally { chatPollBusy = false; }
   }, 4000);
 }
 
@@ -1064,12 +1135,17 @@ function renderMessageList(messages) {
   if (!box) return;
   const stickToBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   const distanceFromBottom = box.scrollHeight - box.scrollTop;
+  // Day dividers keep long threads scannable without stamping every bubble.
+  let lastDay = "";
   box.innerHTML = messages.map(message=>{
     const mine = message.senderId===state.user.id;
     const media = (message.attachments||[]).map(a=>attachmentMarkup(a, mine)).join("");
     // Image-only messages render without bubble chrome (no green frame).
     const mediaOnly = !message.text && (message.attachments||[]).some(a=>String(a.mime||"").startsWith("image/"));
-    return `<div class="bubble ${mine?"mine":""}${mediaOnly?" media-only":""}">${media}${message.text ? `<p>${esc(message.text)}</p>` : ""}<time>${time(message.createdAt)}</time></div>`;
+    const day = messageDayLabel(message.createdAt);
+    const divider = day !== lastDay ? `<div class="chat-day-divider"><span>${esc(day)}</span></div>` : "";
+    lastDay = day;
+    return `${divider}<div class="bubble ${mine?"mine":""}${mediaOnly?" media-only":""}">${media}${message.text ? `<p>${esc(message.text)}</p>` : ""}<time>${time(message.createdAt)}</time></div>`;
   }).join("") || `<div class="no-chat">No messages yet. Say hello.</div>`;
   // innerHTML resets scrollTop, so restore from the distance captured above:
   // anchored to the newest message when following, or frozen on the exact
@@ -1078,13 +1154,23 @@ function renderMessageList(messages) {
 }
 
 async function loadMessages(conversationId) {
+  // Render whatever is already cached for this conversation so re-opening a
+  // chat is instant; the network refresh below updates it in place.
+  state.messagesByConversation ||= {};
+  const cached = state.messagesByConversation[conversationId];
+  if (cached?.length) {
+    state.messages = cached;
+    renderMessageList(cached);
+  }
   try {
     const data = await request(`/api/conversations/${conversationId}/messages`);
     if (state.activeConversation !== conversationId) return;
     state.messages = data.messages;
+    state.messagesByConversation[conversationId] = data.messages;
     renderMessageList(data.messages);
     setChatPolling(conversationId);
-    const fresh = state.conversations.find(item=>item.id===conversationId);
+    let fresh = state.conversations.find(item=>item.id===conversationId);
+    if (!fresh && data.conversation) { state.conversations.unshift(data.conversation); fresh = data.conversation; }
     if (fresh && data.conversation) {
       // Opening the conversation marks it read server-side; adopt the fresh
       // unread count right away so the Messages badge clears on view.
@@ -1094,12 +1180,6 @@ async function loadMessages(conversationId) {
         state.unreadMessages = Math.max(0, (Number(state.unreadMessages) || unreadTotal()) - wasUnread);
       }
       renderNotificationDot();
-      request("/api/badges").then(b => {
-        state.unreadMessages = b.messages;
-        state.notificationsUnread = b.notifications;
-        if (b.adminPending !== undefined) state.adminPending = b.adminPending;
-        renderNotificationDot();
-      }).catch(() => {});
     }
     const form = $("#messageForm");
     if (form) form.onsubmit = sendMessage;
@@ -1120,14 +1200,21 @@ async function sendMessage(event) {
   renderPendingAttachments();
   sendingMessage = true;
   try {
-    await request(`/api/conversations/${state.activeConversation}/messages`,{method:"POST",body:JSON.stringify({ text, attachments })});
-    const data = await request(`/api/conversations/${state.activeConversation}/messages`);
-    state.messages = data.messages;
-    renderMessageList(data.messages);
-    await refreshData(false);
-    renderNotificationDot();
+    const data = await request(`/api/conversations/${state.activeConversation}/messages`,{method:"POST",body:JSON.stringify({ text, attachments })});
+    // Optimistic append from the POST reply - no second GET, no bootstrap.
+    const conversationId = state.activeConversation;
+    state.messages = [...(state.messages || []), data.message];
+    if (state.messagesByConversation) state.messagesByConversation[conversationId] = state.messages;
+    renderMessageList(state.messages);
+    const fresh = state.conversations.find(item=>item.id===conversationId);
+    if (fresh) {
+      const firstMime = (data.message.attachments && data.message.attachments[0]?.mime) || "";
+      fresh.lastMessage = { id:data.message.id, createdAt:data.message.createdAt, senderId:data.message.senderId,
+        text:data.message.text || (firstMime.startsWith("video/") ? "Video" : firstMime.startsWith("image/") ? "Photo" : firstMime ? "Voice note" : "") };
+      fresh.updatedAt = data.message.createdAt;
+    }
     const rows = $("#conversationRows");
-    if (rows) rows.innerHTML = state.conversations.map(conversationRow).join("");
+    if (rows) rows.innerHTML = visibleConversations().map(conversationRow).join("");
   } catch (error) {
     input.value = text;
     pendingChatAttachments = attachments;
@@ -1672,10 +1759,55 @@ function confirmDeleteAccount() {
 }
 
 /* ============ Core Administrator dashboard ============ */
+/* The dashboard shell opens instantly; queue/history fill in when their
+   requests resolve. No centered loading screen. */
+function adminDashboardShell(pending, events, loading) {
+  const queueBody = loading
+    ? `<div class="admin-loading-hint">Fetching the verification queue…</div>`
+    : pending.length
+      ? `<div class="admin-queue">${pending.map(item => `
+      <div class="admin-row">
+        <button class="person-main" data-action="admin-review" data-id="${item.id}">
+          <span class="avatar">${avatarHtml(item.applicantName, item.applicantAvatarUrl)}</span>
+          <span class="conversation-text"><b>${esc(item.applicantName)}</b><span>${esc(item.applicantEmail)} · ${esc(item.applicantUniversity || "")}</span></span>
+        </button>
+        <small class="admin-date">${new Date(item.createdAt).toLocaleDateString()}</small>
+        <span class="status-tag pending">PENDING</span>
+        <button class="button primary small" data-action="admin-review" data-id="${item.id}">Review</button>
+      </div>`).join("")}</div>`
+      : emptyState("Queue is clear", "No verification submissions are waiting for review.");
+  const historyBody = loading
+    ? `<div class="admin-loading-hint">Fetching the audit trail…</div>`
+    : events.length
+      ? `<div class="admin-history">${events.map(event => `
+      <div class="admin-row ${event.decision === "rejected" ? "rejected" : ""}">
+        <span class="conversation-text"><b>${esc(event.userName)}</b><span>${esc(event.userEmail)}</span></span>
+        <span class="status-tag ${event.decision === "approved" ? "ok" : "rejected"}">${event.decision === "approved" ? "VERIFIED" : "REJECTED"}</span>
+        <span class="conversation-text admin-by"><span>by ${esc(event.reviewedByName)}</span><span>${new Date(event.reviewedAt).toLocaleString()}</span></span>
+        ${event.reason ? `<span class="verify-reason">Reason: ${esc(event.reason)}</span>` : ""}
+      </div>`).join("")}</div>`
+      : emptyState("No reviews yet", "Approvals and rejections will appear here.");
+  return `
+    <div class="page-head"><div><h1>Admin dashboard</h1><p>Review verification submissions and manage the platform. Every action is recorded in the audit trail.</p></div></div>
+    <div class="metrics">
+      <div class="metric"><span class="metric-icon">&#9873;</span><div><small>Pending verifications</small><strong>${loading ? "—" : pending.length}</strong></div></div>
+      <div class="metric"><span class="metric-icon">&#10003;</span><div><small>Reviews recorded</small><strong>${loading ? "—" : events.length}</strong></div></div>
+      <div class="metric"><span class="metric-icon">&#9825;</span><div><small>Total users</small><strong>${loading ? "—" : (state.adminOverview?.stats?.users ?? "—")}</strong></div></div>
+    </div>
+    <div class="admin-section glass">
+      <div class="admin-section-head"><div><h2>Verification queue</h2><p>Open a submission to view documents and approve or reject.</p></div><span class="admin-count-pill">${loading ? "…" : `${pending.length} waiting`}</span></div>
+      ${queueBody}
+    </div>
+    <div class="admin-section glass">
+      <div class="admin-section-head"><div><h2>Verification history</h2><p>Every approval and rejection, with the administrator who performed it.</p></div><span class="admin-count-pill">${loading ? "…" : `${events.length} recorded`}</span></div>
+      ${historyBody}
+    </div>`;
+}
 async function renderAdmin() {
   const host = $("#tab-admin");
   if (!host) return;
-  host.innerHTML = `<div class="page-head"><div><h1>Admin dashboard</h1><p>Verification queue, review tools, and the full audit trail.</p></div></div><div class="no-chat"><div><div class="empty-icon">${icon("verified")}</div><b>Loading admin data…</b><p>Fetching the verification queue.</p></div></div>`;
+  // Open the real dashboard immediately with quiet in-place hints.
+  host.innerHTML = adminDashboardShell([], [], true);
   let overview, history;
   try {
     [overview, history] = await Promise.all([
@@ -1686,39 +1818,10 @@ async function renderAdmin() {
     host.innerHTML = `<div class="page-head"><div><h1>Admin dashboard</h1></div></div>${emptyState("Admin access required", error.message)}`;
     return;
   }
-  const pending = overview.verifications || [];
-  const events = history.events || [];
-  host.innerHTML = `
-    <div class="page-head"><div><h1>Admin dashboard</h1><p>Review verification submissions and manage the platform. Every action is recorded in the audit trail.</p></div></div>
-    <div class="metrics">
-      <div class="metric"><span class="metric-icon">&#9873;</span><div><small>Pending verifications</small><strong>${pending.length}</strong></div></div>
-      <div class="metric"><span class="metric-icon">&#10003;</span><div><small>Reviews recorded</small><strong>${events.length}</strong></div></div>
-      <div class="metric"><span class="metric-icon">&#9825;</span><div><small>Total users</small><strong>${overview.stats?.users ?? "—"}</strong></div></div>
-    </div>
-    <div class="admin-section glass">
-      <div class="admin-section-head"><div><h2>Verification queue</h2><p>Open a submission to view documents and approve or reject.</p></div><span class="admin-count-pill">${pending.length} waiting</span></div>
-      ${pending.length ? `<div class="admin-queue">${pending.map(item => `
-      <div class="admin-row">
-        <button class="person-main" data-action="admin-review" data-id="${item.id}">
-          <span class="avatar">${avatarHtml(item.applicantName, item.applicantAvatarUrl)}</span>
-          <span class="conversation-text"><b>${esc(item.applicantName)}</b><span>${esc(item.applicantEmail)} · ${esc(item.applicantUniversity || "")}</span></span>
-        </button>
-        <small class="admin-date">${new Date(item.createdAt).toLocaleDateString()}</small>
-        <span class="status-tag pending">PENDING</span>
-        <button class="button primary small" data-action="admin-review" data-id="${item.id}">Review</button>
-      </div>`).join("")}</div>` : emptyState("Queue is clear", "No verification submissions are waiting for review.")}
-    </div>
-    <div class="admin-section glass">
-      <div class="admin-section-head"><div><h2>Verification history</h2><p>Every approval and rejection, with the administrator who performed it.</p></div><span class="admin-count-pill">${events.length} recorded</span></div>
-      ${events.length ? `<div class="admin-history">${events.map(event => `
-      <div class="admin-row ${event.decision === "rejected" ? "rejected" : ""}">
-        <span class="conversation-text"><b>${esc(event.userName)}</b><span>${esc(event.userEmail)}</span></span>
-        <span class="status-tag ${event.decision === "approved" ? "ok" : "rejected"}">${event.decision === "approved" ? "VERIFIED" : "REJECTED"}</span>
-        <span class="conversation-text admin-by"><span>by ${esc(event.reviewedByName)}</span><span>${new Date(event.reviewedAt).toLocaleString()}</span></span>
-        ${event.reason ? `<span class="verify-reason">Reason: ${esc(event.reason)}</span>` : ""}
-      </div>`).join("")}</div>` : emptyState("No reviews yet", "Approvals and rejections will appear here.")}
-    </div>`;
+  state.adminOverview = overview;
+  host.innerHTML = adminDashboardShell(overview.verifications || [], history.events || [], false);
 }
+
 
 async function adminReviewSheet(verificationId) {
   let overview;
@@ -1988,17 +2091,39 @@ async function submitInspection(event) {
   } catch(error) { toast(error.message); setLoading(button,false); }
 }
 
+function inspectionStatusPill(status) {
+  const label = status === "approved" ? "Approved" : status === "declined" ? "Declined" : "Requested";
+  return `<span class="inspection-status ${esc(status || "requested")}">${label}</span>`;
+}
+
 function inspectionsSheet() {
   const items = state.inspections || [];
   const hosting = state.user.role === "landlord" || inHostView();
   modal(`
-    <div class="modal-head"><div><span class="eyebrow">Inspections</span><h2>${hosting?"Tour requests":"Your requests"}</h2><p>${hosting?"Students who want to inspect one of your houses.":"Inspection requests you have sent to landlords."}</p></div><button class="close-button">&times;</button></div>
+    <div class="modal-head"><div><span class="eyebrow">Inspections</span><h2>${hosting?"Tour requests":"Your requests"}</h2><p>${hosting?"Students who want to inspect one of your houses. Approve or decline each request.":"Inspection requests you have sent to landlords."}</p></div><button class="close-button">&times;</button></div>
     <div class="inspection-list">${items.length ? items.map(inspection=>{
-      const listing = state.listings.find(item=>item.id===inspection.listingId) || state.ownListings.find(item=>item.id===inspection.listingId);
       const isMine = inspection.tenantId === state.user.id;
-      const other = !isMine ? state.roommateCandidates.find(item=>item.id===inspection.tenantId) : null;
-      return `<div class="inspection-row"><span class="metric-icon">${icon("calendar")}</span><span><b>${esc(listing?.title || "House inspection")}</b><small>${esc(inspection.preferredDate || "Date pending")} &middot; ${esc(inspection.timeWindow)} &middot; ${esc(inspection.status)}${other ? ` · ${esc(other.name)}` : ""}</small></span></div>`;
+      const title = inspection.listingTitle || (state.listings.find(item=>item.id===inspection.listingId) || state.ownListings.find(item=>item.id===inspection.listingId))?.title || "House inspection";
+      const otherName = isMine ? "" : ` · ${esc(inspection.tenantName || "Student")}`;
+      const actions = !isMine && inspection.status === "requested"
+        ? `<div class="inspection-actions"><button class="button subtle small" data-action="respond-inspection" data-id="${inspection.id}" data-decision="decline">Decline</button><button class="button primary small" data-action="respond-inspection" data-id="${inspection.id}" data-decision="approve">Approve</button><button class="button light small" data-action="start-chat" data-id="${esc(inspection.tenantId)}">Message</button></div>`
+        : (!isMine && inspection.responseNote ? `<small class="inspection-note">Response: ${esc(inspection.responseNote)}</small>` : "");
+      return `<div class="inspection-row"><span class="metric-icon">${icon("calendar")}</span><span class="inspection-copy"><b>${esc(title)}</b><small>${esc(inspection.preferredDate || "Date pending")} &middot; ${esc(inspection.timeWindow)}${otherName}</small>${actions}</span>${inspectionStatusPill(inspection.status)}</div>`;
     }).join("") : `<div class="empty-state"><div class="empty-icon">${icon("calendar")}</div><h3>No inspection requests yet</h3><p>Requests will appear here after a tenant chooses a viewing window.</p></div>`}</div>`);
+}
+
+// Host decision on a tour request: persists server-side, then the open
+// sheet re-renders so the status pill flips immediately.
+async function respondInspection(id, decision, button) {
+  if (button) setLoading(button, true, decision === "approve" ? "Approving…" : "Declining…");
+  try {
+    const data = await request(`/api/inspections/${id}/respond`,{method:"POST",body:JSON.stringify({ decision })});
+    const index = state.inspections.findIndex(item=>item.id===id);
+    if (index >= 0) state.inspections[index] = { ...state.inspections[index], ...data.inspection };
+    toast(decision === "approve" ? "Inspection approved - the student has been notified" : "Inspection declined - the student has been notified");
+    inspectionsSheet();
+  } catch (error) { toast(error.message); }
+  finally { if (button) setLoading(button, false); }
 }
 
 function reportSheet(id) {
@@ -2072,8 +2197,11 @@ async function saveListingToggle(id) {
 
 async function contactLandlord(id) {
   try {
+    // The server reuses any existing conversation with this host and sends
+    // the automated opener exactly once. No bootstrap refetch: the messages
+    // load below reconciles the conversation list.
     const data = await request(`/api/listings/${id}/contact`,{method:"POST"});
-    await refreshData(false); state.activeConversation=data.conversationId; closeModal(); switchTab("messages"); renderMessages();
+    state.activeConversation=data.conversationId; closeModal(); switchTab("messages"); renderMessages();
   } catch(error) { toast(error.message); }
 }
 
@@ -2301,6 +2429,7 @@ function bindEvents() {
     if (action==="open-inspection") inspectionSheet(id);
     if (action==="open-report") reportSheet(id);
     if (action==="open-inspections") inspectionsSheet();
+    if (action==="respond-inspection") respondInspection(id, actionNode.dataset.decision, actionNode);
     if (action==="open-matches") openMatches();
     if (action==="view-roommate") roommateProfile(id);
     if (action==="connect-roommate") connectRoommate(id);
