@@ -763,3 +763,31 @@ body[data-theme="forest"] .chat-day-divider span,body[data-theme="slate"] .chat-
 
 /* Quiet in-place hint while admin queue/history load inside the shell. */
 .admin-loading-hint{padding:26px 4px;text-align:center;color:var(--muted,#7a8a80);font-size:.86rem}
+
+/* ==========================================================================
+   MESSAGES LAYOUT LOCK (scoped to the Messages tab via :has)
+   The application frame is clamped to the viewport while Messages is open:
+   the page never scrolls; the conversation list scrolls internally; the chat
+   header and composer stay locked; only the message list moves.
+   ========================================================================== */
+.app:has(#tab-messages.active){height:100svh;min-height:0}
+.content:has(#tab-messages.active){overflow:hidden}
+#tab-messages .message-shell{overflow:hidden;min-height:0}
+/* Sidebar: flex column so nothing stretches; two bounded scroll regions. */
+#tab-messages .conversation-list,
+.message-shell.chat-open #tab-messages .conversation-list{display:flex;flex-direction:column;min-height:0;overflow:hidden;gap:2px}
+#tab-messages .conversation-list h2{flex:0 0 auto}
+#tab-messages .conversation-search{flex:0 0 auto;height:38px;padding:8px 11px;font-size:13px;border-radius:12px}
+#tab-messages #conversationRows{flex:1 1 auto;overflow-y:auto;min-height:0;overscroll-behavior:contain;padding-right:2px}
+#tab-messages .discover-block{flex:0 0 auto;max-height:46%;overflow-y:auto;min-height:0;margin-top:10px;padding-top:10px;overscroll-behavior:contain}
+@media(min-width:850px){
+  #tab-messages .message-shell{border-radius:18px;overflow:hidden}
+}
+@media(max-width:820px){
+  /* Mobile: same clamp via the existing flex-column app rule; the sidebar is
+     hidden in chat-open state and scrolls normally in list state. */
+  .app:has(#tab-messages.active){height:100svh}
+  #tab-messages .conversation-list{overflow-y:auto}
+  #tab-messages #conversationRows{overflow:visible}
+  #tab-messages .discover-block{max-height:none;overflow:visible}
+}
