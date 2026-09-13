@@ -425,9 +425,13 @@ function markDirty() {
     dirtyTimer = null;
     const target = USE_MONGODB ? dbCache?.db : fileCache?.db;
     if (!target) return;
-    apiChain = persistDb(target).catch(() => {});
+    apiChain = apiChain.then(() => persistDb(target)).then(() => {}, () => {});
   }, 1_500);
 }
+// Safety net: even with no further activity, dirty bookkeeping (read receipts,
+// pruned sessions) is flushed at least once a minute while the process lives.
+setInterval(() => { if (dirtyTimer) return; if (!dbCache && !fileCache) return; markDirty(); }, 60_000).unref();
+let writeQueueRejections = 0;
 
 async function loadDb() {
   if (!USE_MONGODB) {
@@ -463,16 +467,42 @@ async function loadDb() {
     boom.status = 503;
     throw boom;
   }
-  // Whole-DB snapshot cache: re-reading every collection from Mongo on EVERY
-  // request made each API call re-download the full database (~19s on Atlas
-  // once media blobs accumulate), and the serializeApi chain queued every
-  // user behind it — the app hung on the splash. Within one serverless
-  // instance handlers are serialized, so a fresh-enough snapshot served as a
-  // per-request clone is safe; persistDb refreshes the cache on every write.
-  if (dbCache && Date.now() - dbCache.loadedAt < DB_CACHE_TTL) {
+  // Whole-DB snapshot cache with stale-while-revalidate: requests NEVER wait
+  // for a Mongo refresh while a usable snapshot exists. A cache-warm GET
+  // answers from memory and a single-flight background refresh brings the
+  // snapshot current (bounded by mongoDb() timeouts). Requests without any
+  // snapshot (cold instance) must still do the full load.
+  let refreshing = null;
+  if (dbCache && Date.now() - dbCache.loadedAt >= DB_CACHE_TTL) {
+    if (!dbRefreshStats.refreshing) {
+      dbRefreshStats.refreshing = true;
+      refreshing = (async () => {
+        const t0 = Date.now();
+        try {
+          const fresh = await loadDbFromMongo();
+          dbCache = { db: fresh, loadedAt: Date.now() };
+          dbRefreshStats.lastRefreshMs = Date.now() - t0;
+          dbRefreshStats.lastRefreshAt = new Date().toISOString();
+        } catch (err) {
+          // Keep the stale snapshot on refresh failure; connection-level
+          // errors already carry actionable hints from classifyDbError.
+          if (dbCache) console.error("Background db refresh failed (serving stale):", err?.message);
+          else throw err;
+        } finally { dbRefreshStats.refreshing = false; }
+      })();
+    } else { refreshing = null; }
+  }
+  if (dbCache) {
     ensureCoreAdminRoles(dbCache.db);
     return dbCache.db;
   }
+  if (refreshing) await refreshing;
+  return loadDbFromMongo();
+}
+
+// Cold full load from Mongo (connection + all collections). Called directly
+// when no snapshot exists, and by the stale-while-revalidate refresh.
+async function loadDbFromMongo() {
   let database = null;
   let lastError = null;
   for (let attempt = 0; attempt < 2 && !database; attempt++) {
@@ -609,6 +639,10 @@ function buildPersistedIndex(db) {
 // multi-instance deployments converge quickly; writes always refresh it.
 let dbCache = null;
 const DB_CACHE_TTL = 3_000;
+// Live observability for /api/health?deep=1 and Server-Timing headers.
+const dbRefreshStats = { lastRefreshMs: null, lastRefreshAt: null, refreshing: false };
+let lastQueueWaitMs = null;
+let lastTotalMs = null;
 // File-mode snapshot cache: re-reading + JSON-parsing the whole db.json on
 // EVERY request made each click wait behind disk work. The snapshot is shared
 // (not cloned) so read receipts and similar in-request mutations survive in
@@ -626,9 +660,11 @@ function snapshotKeys(db) {
 async function persistDb(db) {
   mediaFlush(db);
   if (!USE_MONGODB) {
-    // Compact JSON: pretty-printing multiplied the bytes (and the write time)
-    // of every save for zero benefit.
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(db));
+    // Compact JSON + atomic rename: a crash mid-write can truncate a direct
+    // write (torn db.json), while rename is atomic on POSIX.
+    const tmpFile = `${DB_FILE}.tmp`;
+    await fs.promises.writeFile(tmpFile, JSON.stringify(db));
+    await fs.promises.rename(tmpFile, DB_FILE);
     let mtime = 0;
     try { mtime = fs.statSync(DB_FILE).mtimeMs; } catch {}
     fileCache = { db, loadedAt: Date.now(), mtime };
@@ -820,12 +856,39 @@ function readDbShape(db) {
   return db;
 }
 
-// All API requests are serialized through one queue so every read-modify-write
-// is atomic. This prevents the duplicate-account race on concurrent signups.
+// Concurrency architecture:
+// - GET/read requests do NOT enter the queue. They are served from the shared
+//   in-memory snapshot (loadDb cache) and run concurrently. Staleness is
+//   handled by stale-while-revalidate inside loadDb (single-flight refresh).
+// - Mutating requests (POST/PUT/PATCH/DELETE) still run one-at-a-time, so the
+//   load -> mutate -> persist cycle stays atomic: duplicate-account race,
+//   pair-keyed conversation creation, inspection single-response, booking
+//   slots, and idempotent openers all depend on it. This preserves exactly
+//   what the original global queue existed for; it no longer taxes reads.
+// - Write-queue waits are bounded (10s -> clear 503) so a slow persist can
+//   never produce the "button hangs for 20s" experience.
+// - Every API response carries Server-Timing: api_queue_wait / db_refresh /
+//   api_total (also logged server-side when slow) so production latency is
+//   attributable per request.
 let apiChain = Promise.resolve();
-function serializeApi(handler) {
-  const run = apiChain.then(() => handler());
-  apiChain = run.catch(() => {});
+let apiQueueDepth = 0;
+let apiLastWaitMs = 0;
+const WRITE_QUEUE_MAX_WAIT_MS = 10_000;
+function serializeApi(method, handler) {
+  if (method === "GET" || method === "HEAD") return handler();
+  const enqueuedAt = Date.now();
+  apiQueueDepth++;
+  const run = apiChain.then(async () => {
+    const waited = Date.now() - enqueuedAt;
+    apiLastWaitMs = waited;
+    apiQueueDepth = Math.max(0, apiQueueDepth - 1);
+    if (waited > WRITE_QUEUE_MAX_WAIT_MS) {
+      writeQueueRejections++;
+      throw Object.assign(new Error("The app is busy writing - try again in a moment."), { status: 503, code: "WRITE_QUEUE_BUSY" });
+    }
+    return handler();
+  });
+  apiChain = run.then(() => {}, () => {});
   return run;
 }
 
@@ -1113,12 +1176,20 @@ function requireCoreAdmin(req, res, db) {
   return account;
 }
 
+// Request-scoped API timings, surfaced as Server-Timing on every JSON
+// response (see handler() where they are captured).
+function apiTimingHeaders(res) {
+  const existing = res.getHeader("Server-Timing");
+  if (existing) return {};
+  return { "Server-Timing": `api_queue_wait=${apiLastWaitMs}, api_total=${Date.now() - (res.reqStartedAt || Date.now())}` };
+}
 function json(res, status, payload, headers = {}) {
   res.writeHead(status, {
     "Content-Type":"application/json; charset=utf-8",
     "Cache-Control":"no-store",
     "X-Content-Type-Options":"nosniff",
     "Referrer-Policy":"no-referrer",
+    ...apiTimingHeaders(res),
     ...headers
   });
   res.end(JSON.stringify(payload));
@@ -1323,7 +1394,7 @@ function rateLimit(key, limit, windowMs) {
 // rate limiter, so it stays reachable even while the database is unreachable.
 // Reports the driver error code so an Atlas outage can be diagnosed from the
 // browser without exposing any credentials or connection strings.
-async function healthResponse(req, res) {
+async function healthResponse(req, res, url) {
   const body = {
     ok: true,
     mode: USE_MONGODB ? "mongodb" : "file",
@@ -1334,6 +1405,21 @@ async function healthResponse(req, res) {
     paymentsEnabled: Boolean(PAYSTACK_SECRET_KEY),
     time: new Date().toISOString()
   };
+  if (url && url.searchParams.has("deep")) {
+    body.queue = {
+      kind: "writes-only",
+      depth: apiQueueDepth,
+      lastWriteWaitMs: apiLastWaitMs,
+      writeQueueRejections: writeQueueRejections
+    };
+    body.db = {
+      snapshotAgeMs: dbCache ? Date.now() - dbCache.loadedAt : null,
+      lastRefreshMs: dbRefreshStats.lastRefreshMs,
+      lastRefreshAt: dbRefreshStats.lastRefreshAt,
+      refreshing: dbRefreshStats.refreshing
+    };
+    body.lastRequest = { queueWaitMs: lastQueueWaitMs, totalMs: lastTotalMs };
+  }
   if (!USE_MONGODB) return json(res, 200, body);
   const lint = lintMongoUri(process.env.MONGODB_URI);
   if (lint) return json(res, 503, { ...body, ok: false, code: lint.code, hint: lint.hint });
@@ -1349,12 +1435,16 @@ async function healthResponse(req, res) {
 }
 
 async function api(req, res, url) {
-  if (url.pathname === "/api/health") return healthResponse(req, res);
+  if (url.pathname === "/api/health") return healthResponse(req, res, url);
   const ip = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "local";
   if (!rateLimit(`ip:${ip}`, 300, 60_000)) return error(res, 429, "Too many requests. Slow down a moment.");
+  const requestStart = Date.now();
   const db = await loadDb();
   if (!mediaHydrated) { hydrateMediaTokens(db); mediaHydrated = true; }
   if (db.sessions.some(session => session.expiresAt <= Date.now())) {
+    // Rare path (only when something actually expired): purge synchronously so
+    // expired tokens leave the store promptly. Persisting is safe even though
+    // reads run concurrently (atomic file rename / idempotent diffed upserts).
     db.sessions = db.sessions.filter(session => session.expiresAt > Date.now());
     await persistDb(db);
   }
@@ -2526,7 +2616,17 @@ ensureDb();
 async function handler(req,res) {
   const url = new URL(req.url,`http://${req.headers.host || "localhost"}`);
   try {
-    if (url.pathname.startsWith("/api/")) return await serializeApi(() => api(req,res,url));
+    if (url.pathname.startsWith("/api/")) {
+      const startedAt = Date.now();
+      res.reqStartedAt = startedAt;
+      const timed = await serializeApi(req.method, () => api(req,res,url));
+      // Slow-API observability: server-side log with queue wait split out.
+      const total = Date.now() - startedAt;
+      lastQueueWaitMs = apiLastWaitMs;
+      lastTotalMs = total;
+      if (total > 2_500) console.error("slow api:", req.method, url.pathname, `total=${total}ms queueWait=${apiLastWaitMs}ms`);
+      return timed;
+    }
     return serveStatic(req,res,url);
   } catch (err) {
     console.error(err);

@@ -9,6 +9,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const FILE = process.env.OFFKAY_FAKE_MONGO_FILE || path.join(require("node:os").tmpdir(), "offkay-fake-mongo.json");
+// Optional per-operation latency to simulate a remote cluster (e.g. Atlas RTT)
+// in flow measurements. Applied to cursor materialization and writes.
+const OP_DELAY_MS = Number(process.env.OFFKAY_FAKE_MONGO_DELAY_MS || 0);
+const delay = () => (OP_DELAY_MS ? new Promise(r => setTimeout(r, OP_DELAY_MS)) : Promise.resolve());
 let store = { collections: {} };
 if (fs.existsSync(FILE)) {
   try { store = JSON.parse(fs.readFileSync(FILE, "utf8")); } catch { store = { collections: {} }; }
@@ -34,7 +38,7 @@ function matches(doc, filter) {
   });
 }
 function cursor(docs) {
-  return { toArray: async () => docs.map(d => ({ ...d })), sort: () => cursor(docs), limit: () => cursor(docs) };
+  return { toArray: async () => { await delay(); return docs.map(d => ({ ...d })); }, sort: () => cursor(docs), limit: () => cursor(docs) };
 }
 function makeCollection(name) {
   return {
@@ -45,6 +49,7 @@ function makeCollection(name) {
       return cursor(docs);
     },
     async findOne(filter, options) {
+      await delay();
       const doc = coll(name).find(d => matches(d, filter));
       if (!doc) return null;
       const copy = { ...doc };
@@ -52,6 +57,7 @@ function makeCollection(name) {
       return copy;
     },
     async bulkWrite(ops) {
+      await delay();
       for (const op of ops) {
         if (op.replaceOne) {
           const list = coll(name);
@@ -64,6 +70,7 @@ function makeCollection(name) {
       return { upsertedCount: ops.length, modifiedCount: 0 };
     },
     async deleteMany(filter) {
+      await delay();
       const list = coll(name);
       const before = list.length;
       store.collections[name] = list.filter(d => !matches(d, filter));
