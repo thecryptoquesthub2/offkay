@@ -600,8 +600,12 @@ async function loadDbFromMongo() {
 
 // Stable document id per collection, shared by persist and the deletion diff.
 function stableIdOf(name, item) {
+  // Media documents are keyed by their content token, carried as _id.
+  // Missing this made /api/media/:token 404 on every cold instance (the blob
+  // was stored under a hash of the whole document instead of the token).
   return item.id
     || item.token
+    || item._id
     || (name === "saved" && item.userId && item.listingId ? `${item.userId}:${item.listingId}` : null)
     || crypto.createHash("sha1").update(JSON.stringify(item)).digest("hex");
 }
@@ -916,13 +920,40 @@ async function mediaDataUrl(token) {
   }
   try {
     const database = await mongoDb();
-    const record = await database.collection("media").findOne({ _id: token });
-    if (!record?.dataUrl) return null;
-    MEDIA_TOKENS.set(token, record.dataUrl);
-    MEDIA_TOKENS_LIMIT_PRUNE();
-    return record.dataUrl;
+    const collection = database.collection("media");
+    const record = await collection.findOne({ _id: token });
+    if (record?.dataUrl) {
+      MEDIA_TOKENS.set(token, record.dataUrl);
+      MEDIA_TOKENS_LIMIT_PRUNE();
+      return record.dataUrl;
+    }
+    // One-time self-heal for blobs stored under the pre-fix mis-keyed _id
+    // (sha1 of the whole document instead of the content token): scan the
+    // media collection once, re-key every blob correctly, drop the stale
+    // documents, then serve the requested bytes from the healed set.
+    if (!mediaScanHealed) {
+      mediaScanHealed = true;
+      try {
+        const all = await collection.find({}).toArray();
+        for (const entry of all) {
+          if (!entry?.dataUrl || entry._id === mediaToken(entry.dataUrl)) continue;
+          const correctId = mediaToken(entry.dataUrl);
+          await collection.replaceOne({ _id: correctId }, { _id: correctId, dataUrl: entry.dataUrl }, { upsert: true });
+          if (all.some(other => other._id === correctId && other !== entry)) continue;
+          await collection.deleteOne({ _id: entry._id });
+        }
+        const healed = await collection.findOne({ _id: token });
+        if (healed?.dataUrl) {
+          MEDIA_TOKENS.set(token, healed.dataUrl);
+          MEDIA_TOKENS_LIMIT_PRUNE();
+          return healed.dataUrl;
+        }
+      } catch (healErr) { console.error("media heal failed:", healErr?.message); }
+    }
+    return null;
   } catch { return null; }
 }
+let mediaScanHealed = false;
 function mediaToken(dataUrl) {
   return crypto.createHash("sha1").update(String(dataUrl)).digest("hex");
 }

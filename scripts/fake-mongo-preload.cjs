@@ -77,6 +77,24 @@ function makeCollection(name) {
       save();
       return { deletedCount: before - store.collections[name].length };
     },
+    async replaceOne(filter, replacement, options = {}) {
+      await delay();
+      const list = coll(name);
+      const idx = list.findIndex(d => matches(d, filter));
+      let result;
+      if (idx >= 0) { list[idx] = { ...replacement }; result = { matchedCount: 1, upsertedId: null }; }
+      else if (options.upsert) { list.push({ ...replacement }); result = { matchedCount: 0, upsertedId: replacement._id }; }
+      else result = { matchedCount: 0, upsertedId: null };
+      save();
+      return result;
+    },
+    async deleteOne(filter) {
+      await delay();
+      const list = coll(name);
+      const idx = list.findIndex(d => matches(d, filter));
+      if (idx >= 0) { list.splice(idx, 1); save(); return { deletedCount: 1 }; }
+      return { deletedCount: 0 };
+    },
     async countDocuments(filter) { return coll(name).filter(d => matches(d, filter)).length; },
     async insertOne(doc) { coll(name).push({ ...doc }); save(); return {}; }
   };
