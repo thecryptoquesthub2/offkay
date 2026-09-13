@@ -422,6 +422,7 @@ function removeBootSplash() {
 
 function showAuth() {
   removeBootSplash();
+  document.body.classList.remove("messages-open");
   $("#authScreen").classList.remove("hidden");
   $("#app").classList.add("hidden");
   $("#app").hidden = true;
@@ -585,6 +586,10 @@ function renderAdminVisibility() {
 function switchTab(tab, render = true) {
   if (tab !== "profile") state.settingsView = false;
   state.activeTab = tab;
+  // Viewport-lock hook for the Messages frame: :has() proved unreliable
+  // across viewport resizes in real browsers, so the height-clamp rules in
+  // app.css key off this explicit class instead.
+  document.body.classList.toggle("messages-open", tab === "messages");
   $$(".tab").forEach(node => node.classList.toggle("active", node.id === `tab-${tab}`));
   $$("[data-tab]").forEach(node => node.classList.toggle("active", node.dataset.tab === tab));
   if (render) {
@@ -1651,6 +1656,7 @@ async function doLogoutAll() {
   state.activeConversation = null;
   state.messages = [];
   state.settingsView = false;
+  document.body.classList.remove("messages-open");
   closeModal();
   showAuth();
   setAuthMode("login");
@@ -1729,6 +1735,7 @@ async function doLogout() {
   state.activeConversation = null;
   state.messages = [];
   state.settingsView = false;
+  document.body.classList.remove("messages-open");
   closeModal();
   showAuth();
   setAuthMode("login");

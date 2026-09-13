@@ -651,20 +651,20 @@ select.filter-pill{padding-right:32px;background-image:url("data:image/svg+xml;c
    device. No magic viewport math: the shell stretches, only the message
    list scrolls, header/composer/bottom-nav stay locked.
    ========================================================================== */
-.content:has(#tab-messages.active){display:flex;flex-direction:column}
+body.messages-open .content{display:flex;flex-direction:column}
 /* scoped to .active: an ID rule with display would override .tab{display:none}
    and leak the Messages view onto every other tab. */
 #tab-messages.active{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}
 #tab-messages .message-shell{flex:1 1 auto;height:auto;min-height:0;width:100%;max-width:none;margin:0}
 @media(min-width:850px){
-  .content:has(#tab-messages.active){padding:0 0 40px;max-width:none}
+  body.messages-open .content{padding:0 0 40px;max-width:none}
 }
 @media(max-width:820px){
   /* Full-bleed on mobile: .app becomes a flex column so .content receives a
      definite height to fill between the header and the viewport bottom; the
      shell then stretches edge-to-edge with only bottom-nav clearance. */
-  .app:has(#tab-messages.active){display:flex;flex-direction:column}
-  .content:has(#tab-messages.active){flex:1 1 auto;display:flex;flex-direction:column;min-height:0;max-width:none;padding:0 0 calc(92px + env(safe-area-inset-bottom))}
+  body.messages-open .app{display:flex;flex-direction:column}
+  body.messages-open .content{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;max-width:none;padding:0 0 calc(92px + env(safe-area-inset-bottom))}
   #tab-messages .message-shell{border-radius:0;border:0;box-shadow:none}
   .chat-head{padding:12px 14px;min-height:60px}
   .chat-messages{padding:16px 13px}
@@ -770,29 +770,35 @@ body[data-theme="forest"] .chat-day-divider span,body[data-theme="slate"] .chat-
    the page never scrolls; the conversation list scrolls internally; the chat
    header and composer stay locked; only the message list moves.
    ========================================================================== */
-.app:has(#tab-messages.active){height:100svh;min-height:0;grid-template-rows:82px minmax(0,1fr)}
-.content:has(#tab-messages.active){overflow:hidden;min-height:0;height:100%}
+body.messages-open .app{height:100svh;min-height:0;grid-template-rows:82px minmax(0,1fr)}
+body.messages-open .content{overflow:hidden;min-height:0;height:100%}
 #tab-messages .message-shell{overflow:hidden;min-height:0;height:100%}
 #tab-messages.active > .message-shell{grid-template-rows:minmax(0,1fr)}
 #tab-messages .chat{min-height:0;height:100%}
 #tab-messages .chat .chat-messages{min-height:0;flex:1 1 auto}
-/* Sidebar: flex column so nothing stretches; two bounded scroll regions. */
-#tab-messages .conversation-list,
-.message-shell.chat-open #tab-messages .conversation-list{display:flex;flex-direction:column;min-height:0;overflow:hidden;gap:2px}
-#tab-messages .conversation-list h2{flex:0 0 auto}
-#tab-messages .conversation-search{flex:0 0 auto;height:38px;padding:8px 11px;font-size:13px;border-radius:12px}
-#tab-messages #conversationRows{flex:1 1 auto;overflow-y:auto;min-height:0;overscroll-behavior:contain;padding-right:2px}
-#tab-messages .discover-block{flex:0 0 auto;max-height:46%;overflow-y:auto;min-height:0;margin-top:10px;padding-top:10px;overscroll-behavior:contain}
+/* Sidebar: flex column so nothing stretches; two bounded scroll regions.
+   Class-only selectors ON PURPOSE: the state rules that hide/show panels
+   (.message-shell.chat-open .conversation-list{display:none} etc.) have
+   0-3-0 specificity and must keep beating these 0-2-0 rules. An #id here
+   would override the hide rules and stack list+chat in one grid cell. */
+.message-shell .conversation-list{display:flex;flex-direction:column;min-height:0;overflow:hidden;gap:2px}
+.message-shell .conversation-list h2{flex:0 0 auto}
+.message-shell .conversation-search{flex:0 0 auto;height:38px;padding:8px 11px;font-size:13px;border-radius:12px}
+.message-shell #conversationRows{flex:1 1 auto;overflow-y:auto;min-height:0;overscroll-behavior:contain;padding-right:2px}
+.message-shell .discover-block{flex:0 0 auto;max-height:46%;overflow-y:auto;min-height:0;margin-top:10px;padding-top:10px;overscroll-behavior:contain}
 @media(min-width:850px){
-  .app:has(#tab-messages.active){grid-template-rows:70px minmax(0,1fr)}
+  body.messages-open .app{grid-template-rows:70px minmax(0,1fr)}
   #tab-messages .message-shell{border-radius:18px;overflow:hidden}
+  /* Desktop shows both panels; re-assert flex AFTER the earlier
+     display:grid state rule so sidebar children stay in a flex column. */
+  .message-shell.chat-open .conversation-list{display:flex;flex-direction:column;min-height:0;overflow:hidden;gap:2px}
 }
 @media(max-width:820px){
-  /* Mobile: same clamp via the existing flex-column app rule; the sidebar is
-     hidden in chat-open state and scrolls normally in list state. */
-  .app:has(#tab-messages.active){height:100svh;min-height:0}
-  .content:has(#tab-messages.active){min-height:0;height:100%}
-  #tab-messages .conversation-list{overflow-y:auto}
-  #tab-messages #conversationRows{overflow:visible}
-  #tab-messages .discover-block{max-height:none;overflow:visible}
+  /* Mobile: same clamp via the existing flex-column app rule. List state
+     shows ONLY the sidebar (the desktop empty-state panel is noise on a
+     phone); chat state shows ONLY the chat - the class-scoped flex rule
+     above loses to .message-shell.chat-open .conversation-list{display:none}. */
+  body.messages-open .app{height:100svh;min-height:0}
+  body.messages-open .content{min-height:0;height:100%}
+  .message-shell .no-chat{display:none}
 }
