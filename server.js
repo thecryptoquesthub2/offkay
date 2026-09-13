@@ -320,6 +320,7 @@ function EMPTY_DB() {
 function readDb() {
   ensureDb();
   const db = JSON.parse(fs.readFileSync(DB_FILE, "utf8").replace(/^\uFEFF/, ""));
+  db.media ||= [];
   db.users ||= [];
   db.sessions ||= [];
   db.listings ||= [];
@@ -343,7 +344,7 @@ function readDb() {
     booking.paymentRefs ||= {};
     booking.shareToken ||= id("shk");
   });
-  return db;
+  return dbRefsShape(db);
 }
 
 // Persistence layer. On Vercel the filesystem is ephemeral, so when MONGODB_URI
@@ -404,8 +405,11 @@ function classifyDbError(lastError) {
 
 async function loadDb() {
   if (!USE_MONGODB) {
-    const db = readDb();
-    ensureCoreAdminRoles(db);
+    const loaded = readDb();
+    ensureCoreAdminRoles(loaded);
+    const legacy = hasLegacyBlobs(loaded);
+    const db = dbRefsShape(loaded);
+    if (legacy) { try { await persistDb(db); } catch {} }
     return db;
   }
   const lint = lintMongoUri(process.env.MONGODB_URI);
@@ -443,7 +447,7 @@ async function loadDb() {
     boom.status = 503;
     throw boom;
   }
-  const [meta, users, sessions, listings, saved, conversations, messages, bookings, inspections, reports, verifications, notifications, connections, passwordResets] = await Promise.all([
+  const [meta, users, sessions, listings, saved, conversations, messages, bookings, inspections, reports, verifications, notifications, connections, passwordResets, media] = await Promise.all([
     database.collection("state").findOne({ _id: "counters" }),
     database.collection("users").find({}).toArray(),
     database.collection("sessions").find({}).toArray(),
@@ -457,9 +461,10 @@ async function loadDb() {
     database.collection("verifications").find({}).toArray(),
     database.collection("notifications").find({}).toArray(),
     database.collection("connections").find({}).toArray(),
-    database.collection("passwordResets").find({}).toArray()
+    database.collection("passwordResets").find({}).toArray(),
+    database.collection("media").find({}, { projection: { dataUrl: 0 } }).toArray()
   ]);
-  const db = readDbShape({
+  const loaded = readDbShape({
     users: users.map(({ _id, ...rest }) => rest),
     sessions: sessions.map(({ _id, ...rest }) => rest),
     listings: listings.map(({ _id, ...rest }) => rest),
@@ -472,10 +477,17 @@ async function loadDb() {
     verifications: verifications.map(({ _id, ...rest }) => rest),
     notifications: notifications.map(({ _id, ...rest }) => rest),
     connections: connections.map(({ _id, ...rest }) => rest),
-    passwordResets: passwordResets.map(({ _id, ...rest }) => rest)
+    passwordResets: passwordResets.map(({ _id, ...rest }) => rest),
+    media: media.map(({ _id, ...rest }) => ({ _id, ...rest }))
   });
+  const legacy = hasLegacyBlobs(loaded);
+  const db = dbRefsShape(loaded);
   ensureCoreAdminRoles(db);
   loadedKeys = snapshotKeys(db);
+  // One-time migration: rewrite legacy inline blobs as refs + media docs so
+  // the very next load is light. Without this, cold instances would keep
+  // paying the full-blob download until a random write happened to migrate.
+  if (legacy && USE_MONGODB) { try { await persistDb(db); } catch {} }
   return db;
 }
 
@@ -487,7 +499,7 @@ function stableIdOf(name, item) {
     || crypto.createHash("sha1").update(JSON.stringify(item)).digest("hex");
 }
 
-const PERSIST_COLLECTIONS = ["users","sessions","listings","saved","conversations","messages","bookings","inspections","reports","verifications","notifications","connections","passwordResets","verification_events"];
+const PERSIST_COLLECTIONS = ["users","sessions","listings","saved","conversations","messages","bookings","inspections","reports","verifications","notifications","connections","passwordResets","verification_events","media"];
 
 // Keys present in the database at load time. persistDb diffs against this so
 // records REMOVED server-side (sign-out, expired-session pruning, account or
@@ -509,6 +521,7 @@ function snapshotKeys(db) {
 }
 
 async function persistDb(db) {
+  mediaFlush(db);
   if (!USE_MONGODB) {
     await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2));
     return;
@@ -528,7 +541,8 @@ async function persistDb(db) {
     verification_events: db.verification_events || [],
     notifications: db.notifications || [],
     connections: db.connections || [],
-    passwordResets: db.passwordResets || []
+    passwordResets: db.passwordResets || [],
+    media: db.media || []
   };
   const writes = Object.entries(collections).map(([name, items]) => {
     if (!items.length) return Promise.resolve();
@@ -554,6 +568,48 @@ async function persistDb(db) {
   // Writes are the only mutation path; refresh the snapshot so the next
   // loadDb within the TTL serves exactly what was just persisted.
   dbCache = { db: structuredClone(db), loadedAt: Date.now() };
+}
+
+// At-rest document shape: heavy blobs live in the `media` collection;
+// users/listings/messages/verifications carry "media:<token>" refs. Reading
+// 14 collections no longer ships megabytes of base64 per API request.
+function hasLegacyBlobs(db) {
+  const hot = [
+    [db.users, "avatar"], [db.listings, "photos"],
+    [db.messages, "attachments"], [db.verifications, "idCardImage"], [db.verifications, "supportDocument"]
+  ];
+  for (const [items, field] of hot) {
+    for (const item of items || []) {
+      const value = item?.[field];
+      if (typeof value === "string" && value.startsWith("data:")) return true;
+      if (Array.isArray(value) && value.some(v => typeof v === "string" && v.startsWith("data:"))) return true;
+      if (Array.isArray(value) && value.some(a => typeof a?.dataUrl === "string" && a.dataUrl.startsWith("data:"))) return true;
+    }
+  }
+  return false;
+}
+
+function dbRefsShape(db) {
+  const blobFields = [
+    [db.users, "avatar"],
+    [db.listings, "photos"],
+    [db.messages, "attachments"],
+    [db.verifications, "idCardImage"],
+    [db.verifications, "supportDocument"]
+  ];
+  for (const [items, field] of blobFields) {
+    for (const item of items || []) {
+      const value = item[field];
+      if (Array.isArray(value)) item[field] = value.map(v => typeof v === "string" && v.startsWith("data:") ? `media:${mediaStore(v)}` : v);
+      else if (typeof value === "string" && value.startsWith("data:")) item[field] = `media:${mediaStore(value)}`;
+      else if (value && typeof value === "object") {
+        for (const a of value) {
+          if (typeof a.dataUrl === "string" && a.dataUrl.startsWith("data:")) { a.url = `media:${mediaStore(a.dataUrl)}`; delete a.dataUrl; }
+        }
+      }
+    }
+  }
+  return db;
 }
 
 function readDbShape(db) {
@@ -600,8 +656,29 @@ function serializeApi(handler) {
 // /api/media/:token URLs; the endpoint hashes stored blobs on the fly and
 // serves them with long-lived caching. Storage format is unchanged.
 // ---------------------------------------------------------------------------
-const MEDIA_TOKENS = new Map(); // sha1 hex -> data URL
+const MEDIA_TOKENS = new Map(); // sha1 hex -> data URL (write-through cache)
 let mediaHydrated = false;
+// Resolve a media token to its data URL: memory cache first, then ONE small
+// document from Mongo (never the whole collection). Tokens are content
+// hashes, so this is exact; results memoize for the instance lifetime.
+async function mediaDataUrl(token) {
+  if (MEDIA_TOKENS.has(token)) return MEDIA_TOKENS.get(token);
+  if (!USE_MONGODB) {
+    const db = await loadDb();
+    const record = (db.media || []).find(entry => entry._id === token);
+    if (!record?.dataUrl) return null;
+    MEDIA_TOKENS.set(token, record.dataUrl);
+    return record.dataUrl;
+  }
+  try {
+    const database = await mongoDb();
+    const record = await database.collection("media").findOne({ _id: token });
+    if (!record?.dataUrl) return null;
+    MEDIA_TOKENS.set(token, record.dataUrl);
+    MEDIA_TOKENS_LIMIT_PRUNE();
+    return record.dataUrl;
+  } catch { return null; }
+}
 function mediaToken(dataUrl) {
   return crypto.createHash("sha1").update(String(dataUrl)).digest("hex");
 }
@@ -612,17 +689,8 @@ function mediaUrlOf(dataUrl) {
   return `/api/media/${token}`;
 }
 function hydrateMediaTokens(db) {
-  const users = db.users || [];
-  for (const user of users) {
-    if (user.avatar) mediaUrlOf(user.avatar);
-    if (user.googlePicture) mediaUrlOf(user.googlePicture);
-  }
-  for (const listing of db.listings || []) for (const photo of listing.photos || []) mediaUrlOf(photo);
-  for (const message of db.messages || []) for (const a of message.attachments || []) mediaUrlOf(a.dataUrl);
-  for (const verification of db.verifications || []) {
-    if (verification.idCardImage) mediaUrlOf(verification.idCardImage);
-    if (verification.supportDocument) mediaUrlOf(verification.supportDocument);
-  }
+  // Blobs no longer ride in the hot shape; tokens need no pre-warm because
+  // URLs are derived from the token itself. googlePicture stays external.
   MEDIA_TOKENS_LIMIT_PRUNE();
 }
 function MEDIA_TOKENS_LIMIT_PRUNE() {
@@ -636,13 +704,42 @@ function MEDIA_TOKENS_LIMIT_PRUNE() {
 function attachmentsOut(attachments) {
   return (Array.isArray(attachments) ? attachments : []).map(a => ({
     name: a.name || null, mime: a.mime || null, meta: a.meta || null,
-    url: mediaUrlOf(a.dataUrl)
+    url: (typeof a.url === "string" && a.url) || (typeof a.dataUrl === "string" ? mediaRefUrlOf(a.dataUrl) : null)
   })).filter(a => a.url);
+}
+// A stored value is either a "media:<token>" ref (URL built from the token
+// alone - no byte access) or a legacy inline data URL (tokenize now).
+function mediaRefUrlOf(value) {
+  if (typeof value !== "string") return null;
+  if (value.startsWith("media:")) return `/api/media/${value.slice(6)}`;
+  if (value.startsWith("data:")) return mediaUrlOf(value);
+  return null;
+}
+// Store a data URL's bytes once (content-addressed) and return its token.
+// The blob lands in the `media` collection on the next persist; the map
+// makes it servable immediately even before that write lands.
+function mediaStore(dataUrl) {
+  const token = mediaToken(dataUrl);
+  if (!MEDIA_TOKENS.has(token)) {
+    MEDIA_TOKENS.set(token, dataUrl);
+    MEDIA_TOKENS.set(`__pending:${token}`, dataUrl);
+  }
+  return token;
+}
+// Move cached uploads into db.media so the next persist stores the bytes.
+function mediaFlush(db) {
+  if (!db.media) db.media = [];
+  for (const key of [...MEDIA_TOKENS.keys()]) {
+    if (!key.startsWith("__pending:")) continue;
+    const token = key.slice(10);
+    if (!db.media.some(entry => entry._id === token)) db.media.push({ _id: token, dataUrl: MEDIA_TOKENS.get(key) });
+    MEDIA_TOKENS.delete(key);
+  }
 }
 function publicUser(user) {
   if (!user) return null;
   const { password, ...safe } = user;
-  safe.avatarUrl = mediaUrlOf(user.avatar) || user.googlePicture || null;
+  safe.avatarUrl = mediaRefUrlOf(user.avatar) || user.googlePicture || null;
   // Authorization data the client may know: whether THIS session is an admin
   // (used only to show the Admin entry point). Every admin action is still
   // verified server-side — this flag gates UI, never authorization.
@@ -729,7 +826,7 @@ function profileView(account) {
     memberSince: account.createdAt || null,
     // Public-safe avatar: the user's uploaded photo or their Google profile
     // picture. Never an arbitrary user-supplied URL.
-    avatarUrl: mediaUrlOf(account.avatar) || account.googlePicture || null
+    avatarUrl: mediaRefUrlOf(account.avatar) || account.googlePicture || null
   };
 }
 
@@ -929,8 +1026,8 @@ function listingPayload(listing, db, user) {
     ...publicListing,
     ...(isOwnerView ? { latitude, longitude } : {}),
     ...approximateCoords(listing),
-    owner: owner ? { id:owner.id, name:owner.name, verified:owner.verified, avatarUrl: mediaUrlOf(owner.avatar) || owner.googlePicture || null } : null,
-    photos: (Array.isArray(listing.photos) ? listing.photos : []).slice(0, 4).map(photo => mediaUrlOf(photo)).filter(Boolean),
+    owner: owner ? { id:owner.id, name:owner.name, verified:owner.verified, avatarUrl: mediaRefUrlOf(owner.avatar) || owner.googlePicture || null } : null,
+    photos: (Array.isArray(listing.photos) ? listing.photos : []).slice(0, 4).map(photo => mediaRefUrlOf(photo)).filter(Boolean),
     hostView: Boolean(owner && (owner.verified === true || owner.role === "landlord")),
     saved: Boolean(user && db.saved.some(item => item.userId === user.id && item.listingId === listing.id)),
     proximity: proximityPayload(listing),
@@ -1063,7 +1160,7 @@ async function api(req, res, url) {
   const mediaMatch = route.match(/^\/api\/media\/([a-f0-9]{40})$/);
   if (mediaMatch && method === "GET") {
     const account = requireUser(req,res,db); if (!account) return;
-    const dataUrl = MEDIA_TOKENS.get(mediaMatch[1]);
+    const dataUrl = MEDIA_TOKENS.get(mediaMatch[1]) || await mediaDataUrl(mediaMatch[1]);
     const mimeMatch = typeof dataUrl === "string" && dataUrl.match(/^data:((?:image\/(?:jpeg|png|webp|gif))|(?:video\/(?:mp4|webm|quicktime))|(?:audio\/(?:webm|mp4|mpeg|ogg|wav)));base64,([A-Za-z0-9+\/=]+)$/);
     if (!mimeMatch) return error(res,404,"Media not found");
     res.writeHead(200, {
@@ -1394,7 +1491,7 @@ async function api(req, res, url) {
       if (body.avatar === null) {
         account.avatar = null;
       } else if (typeof body.avatar === "string" && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(body.avatar.slice(0, 120)) && body.avatar.length <= 1_200_000) {
-        account.avatar = body.avatar;
+        account.avatar = `media:${mediaStore(body.avatar)}`;
       } else {
         return error(res, 400, "Profile photo must be a small JPEG, PNG, or WebP image");
       }
@@ -1427,8 +1524,8 @@ async function api(req, res, url) {
     if (nin.length < 8) return error(res,400,"Enter a valid NIN before submitting verification");
     const verification = {
       id:id("ver"),userId:account.id,nin:encrypt(nin.slice(0,20)),idType:String(body.idType || "Student ID").slice(0,60),
-      idCardImage:typeof body.idCardImage === "string" && body.idCardImage.startsWith("data:image/") ? body.idCardImage.slice(0,1_200_000) : null,
-      supportDocument:typeof body.supportDocument === "string" && body.supportDocument.startsWith("data:image/") ? body.supportDocument.slice(0,1_200_000) : null,
+      idCardImage:typeof body.idCardImage === "string" && body.idCardImage.startsWith("data:image/") ? `media:${mediaStore(body.idCardImage.slice(0,1_200_000))}` : null,
+      supportDocument:typeof body.supportDocument === "string" && body.supportDocument.startsWith("data:image/") ? `media:${mediaStore(body.supportDocument.slice(0,1_200_000))}` : null,
       status:"manual_review",createdAt:new Date().toISOString()
     };
     db.verifications.push(verification);
@@ -1453,7 +1550,7 @@ async function api(req, res, url) {
       bathrooms:Math.min(10,Math.max(1,Number(body.bathrooms) || 1)),
       description:String(body.description || "").trim().slice(0,2000),
       amenities:Array.isArray(body.amenities) ? body.amenities.map(String).slice(0,10) : [],
-      photos:Array.isArray(body.photos) ? body.photos.filter(photo => typeof photo === "string" && photo.startsWith("data:image/")).slice(0,4) : [],
+      photos:Array.isArray(body.photos) ? body.photos.filter(photo => typeof photo === "string" && photo.startsWith("data:image/")).slice(0,4).map(photo => `media:${mediaStore(photo)}`) : [],
       latitude:Number(body.latitude || 0),longitude:Number(body.longitude || 0),
       source:"host",verified:false,status:"active",
       accent:["emerald","amber","blue","rose"][db.listings.length%4],
@@ -1509,7 +1606,7 @@ async function api(req, res, url) {
       preferredDate:String(body.preferredDate || "").slice(0,30),
       timeWindow:String(body.timeWindow || "Morning").slice(0,30),
       note:String(body.note || "").trim().slice(0,600),
-      evidenceImage:typeof body.evidenceImage === "string" && body.evidenceImage.startsWith("data:image/") ? body.evidenceImage.slice(0,1_000_000) : null,
+      evidenceImage:typeof body.evidenceImage === "string" && body.evidenceImage.startsWith("data:image/") ? `media:${mediaStore(body.evidenceImage.slice(0,1_000_000))}` : null,
       status:"requested",createdAt:new Date().toISOString()
     };
     db.inspections.push(inspection);
@@ -1529,7 +1626,7 @@ async function api(req, res, url) {
     if (!category || detail.length < 8) return error(res,400,"Choose a concern and add a short description");
     const report = {
       id:id("rpt"),listingId:listing.id,reportedBy:account.id,category:category.slice(0,80),
-      detail:detail.slice(0,1000),evidenceImage:typeof body.evidenceImage === "string" && body.evidenceImage.startsWith("data:image/") ? body.evidenceImage.slice(0,1_000_000) : null,
+      detail:detail.slice(0,1000),evidenceImage:typeof body.evidenceImage === "string" && body.evidenceImage.startsWith("data:image/") ? `media:${mediaStore(body.evidenceImage.slice(0,1_000_000))}` : null,
       status:"received",createdAt:new Date().toISOString()
     };
     db.reports.push(report);
@@ -1608,7 +1705,7 @@ async function api(req, res, url) {
       if (bytes > MAX_SINGLE) return error(res,413,"Attachment too large. Keep files under about 650 KB.");
       totalBytes += bytes;
       if (totalBytes > MAX_TOTAL) return error(res,413,"Attachments too large for one message.");
-      cleaned.push({ mime, name: String(a?.name || "attachment" + ALLOWED[mime]).slice(0,60), bytes, meta: meta.slice(0,120), dataUrl });
+      cleaned.push({ mime, name: String(a?.name || "attachment" + ALLOWED[mime]).slice(0,60), bytes, meta: meta.slice(0,120), dataUrl: `media:${mediaStore(dataUrl)}` });
     }
     const message = {id:id("msg"),conversationId:conversation.id,senderId:account.id,text:text.slice(0,2000),createdAt:new Date().toISOString()};
     if (cleaned.length) message.attachments = cleaned.map(({mime,name,bytes,meta,dataUrl}) => ({mime,name,bytes,meta,dataUrl}));
@@ -2106,7 +2203,8 @@ async function api(req, res, url) {
     if (documentMatch && method === "GET") {
       const verification = db.verifications.find(v => v.id === documentMatch[1]);
       if (!verification) return error(res,404,"Verification not found");
-      const dataUri = documentMatch[2] === "idCard" ? verification.idCardImage : verification.supportDocument;
+      const ref = documentMatch[2] === "idCard" ? verification.idCardImage : verification.supportDocument;
+      const dataUri = typeof ref === "string" && ref.startsWith("media:") ? await mediaDataUrl(ref.slice(6)) : ref;
       if (!dataUri) return error(res,404,"No document uploaded");
       const [meta, base64] = dataUri.split(",");
       const mimeMatch = meta.match(/data:([^;]+)/);
