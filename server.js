@@ -414,6 +414,15 @@ async function loadDb() {
     boom.status = 503;
     throw boom;
   }
+  // Whole-DB snapshot cache: re-reading every collection from Mongo on EVERY
+  // request made each API call re-download the full database (~19s on Atlas
+  // once media blobs accumulate), and the serializeApi chain queued every
+  // user behind it — the app hung on the splash. Within one serverless
+  // instance handlers are serialized, so a fresh-enough snapshot served as a
+  // per-request clone is safe; persistDb refreshes the cache on every write.
+  if (dbCache && Date.now() - dbCache.loadedAt < DB_CACHE_TTL) {
+    return structuredClone(dbCache.db);
+  }
   let database = null;
   let lastError = null;
   for (let attempt = 0; attempt < 2 && !database; attempt++) {
@@ -486,6 +495,11 @@ const PERSIST_COLLECTIONS = ["users","sessions","listings","saved","conversation
 // the next load. API requests are serialized, so load→mutate→persist cycles
 // never interleave.
 let loadedKeys = null;
+
+// Snapshot cache for loadDb (see comment inside loadDb). TTL is short so
+// multi-instance deployments converge quickly; writes always refresh it.
+let dbCache = null;
+const DB_CACHE_TTL = 3_000;
 function snapshotKeys(db) {
   const snap = {};
   for (const name of PERSIST_COLLECTIONS) {
@@ -537,6 +551,9 @@ async function persistDb(db) {
   }
   await Promise.all(writes);
   loadedKeys = currentKeys;
+  // Writes are the only mutation path; refresh the snapshot so the next
+  // loadDb within the TTL serves exactly what was just persisted.
+  dbCache = { db: structuredClone(db), loadedAt: Date.now() };
 }
 
 function readDbShape(db) {
