@@ -476,10 +476,15 @@ async function loadDb() {
   if (dbCache && Date.now() - dbCache.loadedAt >= DB_CACHE_TTL) {
     if (!dbRefreshStats.refreshing) {
       dbRefreshStats.refreshing = true;
+      const refreshStartedAt = Date.now();
       refreshing = (async () => {
         const t0 = Date.now();
         try {
           const fresh = await loadDbFromMongo();
+          // A write that landed while this refresh was in flight already
+          // installed a NEWER snapshot (persistDb); installing this older
+          // read over it would resurrect the "valid session 401s" window.
+          if (dbCache && dbCache.loadedAt > refreshStartedAt) return;
           dbCache = { db: fresh, loadedAt: Date.now() };
           dbRefreshStats.lastRefreshMs = Date.now() - t0;
           dbRefreshStats.lastRefreshAt = new Date().toISOString();
@@ -1173,6 +1178,47 @@ function currentUser(req, db) {
   return session ? db.users.find(user => user.id === session.userId) : null;
 }
 
+// Authoritative session check. The snapshot cache can be up to DB_CACHE_TTL
+// stale - a session created by another instance (or moments ago on this one)
+// may be missing from it, which used to 401 a perfectly valid token and force
+// users back to the sign-in screen. On a snapshot miss, ask Mongo directly;
+// a hit splices the records into the live snapshot so later requests hit the
+// fast path. Fails closed only when Mongo confirms the token is gone.
+async function authenticate(req, db) {
+  const token = parseCookies(req).ch_session;
+  if (!token) return null;
+  const snapshotUser = currentUser(req, db);
+  if (snapshotUser) return snapshotUser;
+  if (!USE_MONGODB) return null;
+  try {
+    const database = await Promise.race([
+      mongoDb(),
+      new Promise((unused, reject) => setTimeout(() => reject(new Error("session revive timeout")), 3_000))
+    ]);
+    const session = await database.collection("sessions").findOne({ token });
+    if (!session || session.expiresAt <= Date.now()) return null;
+    const account = await database.collection("users").findOne({ id: session.userId });
+    if (!account) return null;
+    delete account._id;
+    if (!db.sessions.some(item => item.token === token)) {
+      db.sessions.push({ token: session.token, userId: session.userId, expiresAt: session.expiresAt });
+    }
+    if (!db.users.some(item => item.id === account.id)) db.users.push(account);
+    // Track the spliced keys as loaded, otherwise the next persistDb delete
+    // diff (loadedKeys baseline) would never see their later removal and
+    // revocations would not propagate to Mongo.
+    if (loadedKeys) {
+      loadedKeys.sessions?.add(token);
+      loadedKeys.users?.add(account.id);
+    }
+    console.log("Session revived from Mongo (snapshot was stale):", account.username || account.id);
+    return account;
+  } catch (err) {
+    console.warn("Session revive failed, serving snapshot answer:", err?.message || err);
+    return null; // Mongo unreachable: fall back to the snapshot answer (401)
+  }
+}
+
 function canHost(user) {
   return user?.role === "landlord" || user?.hosting === true;
 }
@@ -1484,10 +1530,16 @@ async function api(req, res, url) {
     db.sessions = db.sessions.filter(session => session.expiresAt > Date.now());
     await persistDb(db);
   }
-  const user = currentUser(req, db);
+  const user = await authenticate(req, db);
   const method = req.method;
   const route = url.pathname;
 
+  // Authoritative, uncached session check. The client confirms any 401
+  // against this before destroying a signed-in session (stale snapshots on
+  // warm instances must never force a re-login).
+  if (route === "/api/session" && method === "GET") {
+    return json(res, 200, { user: publicUser(user) });
+  }
   const mediaMatch = route.match(/^\/api\/media\/([a-f0-9]{40})$/);
   if (mediaMatch && method === "GET") {
     const account = requireUser(req,res,db); if (!account) return;

@@ -159,6 +159,26 @@ function fetchWithTimeout(url, options = {}, timeoutMs = 12_000) {
   return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
+// Double-check a 401 before destroying the local session. /api/session is
+// authoritative (runs the Mongo revive path server-side), so a stale snapshot
+// 401 on a warm instance no longer force-logs the user out.
+let sessionCheckInFlight = null;
+async function sessionStillValid() {
+  if (!sessionCheckInFlight) {
+    sessionCheckInFlight = (async () => {
+      try {
+        const response = await fetchWithTimeout("/api/session", { credentials: "same-origin" });
+        if (!response.ok) return false;
+        const payload = await response.json().catch(() => ({}));
+        return Boolean(payload.user);
+      } catch {
+        return true; // network hiccup: never log out on a guess
+      }
+    })().finally(() => { sessionCheckInFlight = null; });
+  }
+  return sessionCheckInFlight;
+}
+
 async function request(url, options = {}) {
   let response;
   try {
@@ -174,10 +194,17 @@ async function request(url, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 && state.user) {
-      state.user = null;
-      try { localStorage.removeItem("offkay-theme"); } catch {}
-      showAuth();
-      toast("Your session expired - please sign in again");
+      // Usually a stale server-side snapshot, not a real expiry: confirm
+      // against /api/session before forcing the user back to sign-in.
+      const stillValid = await sessionStillValid();
+      // Re-check state.user: parallel 401s share one session check, and only
+      // the first handler should tear down the session (no triple logout).
+      if (!stillValid && state.user) {
+        state.user = null;
+        try { localStorage.removeItem("offkay-theme"); } catch {}
+        showAuth();
+        toast("Your session expired - please sign in again");
+      }
     }
     throw new Error(payload.error || "Something went wrong");
   }
