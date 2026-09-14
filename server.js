@@ -335,8 +335,10 @@ function readDb() {
   db.connections ||= [];
   db.passwordResets ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
-  // Heal legacy duplicate direct conversations on load. loadDb persists the
-  // heal (see below) and removes the __dedupe bookkeeping key afterwards.
+  // Heal duplicate accounts (same email) first — the remap can create pair
+  // duplicates that the conversation merge below then collapses. loadDb
+  // persists the heal (see below) and removes the __dedupe key afterwards.
+  dedupeUsersByEmail(db);
   dedupeDirectConversations(db);
   db.bookings.forEach(booking => {
     if (!Array.isArray(booking.paymentShares) || booking.paymentShares.length !== booking.splitCount) {
@@ -376,7 +378,23 @@ function mongoDb() {
       socketTimeoutMS: 20_000,
       retryWrites: true
     }).connect()
-      .then(client => { mongoDownUntil = 0; return client.db(process.env.MONGODB_DB || "offkay"); })
+      .then(client => {
+        mongoDownUntil = 0;
+        const database = client.db(process.env.MONGODB_DB || "offkay");
+        // Cluster-wide uniqueness for the two records that must never
+        // duplicate: one account per email, one direct conversation per
+        // participant pair. The snapshot email check cannot see what another
+        // instance writes; the unique index turns a cross-instance race into
+        // E11000, which the create paths answer cleanly instead of making a
+        // second record. Built best-effort: if legacy duplicates exist the
+        // build fails, the load-time heal removes them, and the next cold
+        // instance builds the index.
+        database.collection("users").createIndex({ email: 1 }, { unique: true, name: "uniq_users_email" })
+          .catch(err => console.error("users.email unique index not built:", err?.message));
+        database.collection("conversations").createIndex({ pairKey: 1 }, { unique: true, name: "uniq_conversations_pair", partialFilterExpression: { pairKey: { $type: "string" } } })
+          .catch(err => console.error("conversations.pairKey unique index not built:", err?.message));
+        return database;
+      })
       .catch(err => { mongoDbPromise = null; mongoDownUntil = Date.now() + 10_000; throw err; });
   }
   return mongoDbPromise;
@@ -450,7 +468,7 @@ async function loadDb() {
     // server start, and only when duplicates actually existed.
     const fileHeal = loaded.__dedupe;
     delete loaded.__dedupe;
-    if (fileHeal && (fileHeal.droppedConversations.length || fileHeal.newPairKeys.length)) {
+    if (fileHeal && (fileHeal.droppedConversations.length || fileHeal.newPairKeys.length || fileHeal.droppedUsers?.length)) {
       try { await persistDb(loaded); } catch {}
     }
     const legacy = hasLegacyBlobs(loaded);
@@ -578,11 +596,27 @@ async function loadDbFromMongo() {
   // otherwise the healed view would reappear from Mongo on the next cold load.
   const heal = db.__dedupe;
   delete db.__dedupe;
-  if (heal && (heal.droppedConversations.length || heal.touchedMessages.length || heal.newPairKeys.length)) {
+  if (heal && (heal.droppedConversations.length || heal.touchedMessages.length || heal.newPairKeys.length || heal.droppedUsers?.length)) {
     try {
       const conversations = database.collection("conversations");
       const messages = database.collection("messages");
       if (heal.droppedConversations.length) await conversations.deleteMany({ _id: { $in: heal.droppedConversations } });
+      if (heal.droppedUsers?.length) {
+        await database.collection("users").deleteMany({ _id: { $in: heal.droppedUsers } });
+        // The merge also rewrote references in every other collection; the
+        // healed in-memory docs must REPLACE their Mongo counterparts or the
+        // deleted duplicate ids stay referenced until some unrelated write.
+        // users included: folded-in profile fields (hosting/verified/…) must
+        // reach Mongo too. User docs hold media refs, never blobs — safe.
+        const refCollections = ["users","sessions","listings","saved","conversations","messages","bookings","inspections","reports","verifications","verification_events","notifications","connections","passwordResets"];
+        for (const name of refCollections) {
+          const items = (db[name] || []).filter(item => item && (item.id || item.token || item._id));
+          if (!items.length) continue;
+          await database.collection(name).bulkWrite(items.map(item => ({
+            replaceOne: { filter: { _id: stableIdOf(name, item) }, replacement: { ...item, _id: stableIdOf(name, item) }, upsert: true }
+          })), { ordered: false });
+        }
+      }
       for (const conversation of db.conversations) {
         if (!heal.newPairKeys.includes(conversation.id)) continue;
         await conversations.replaceOne({ _id: conversation.id }, { ...conversation, _id: conversation.id }, { upsert: true });
@@ -834,7 +868,65 @@ function dedupeDirectConversations(db) {
     merged.add(drop.id);
   }
   if (merged.size) db.conversations = db.conversations.filter(conversation => !merged.has(conversation.id));
-  db.__dedupe = { droppedConversations: [...merged], touchedMessages: [...touchedMessages], newPairKeys: [...newPairKeys] };
+  // droppedUsers set by dedupeUsersByEmail must survive this pass (the user
+  // heal runs FIRST, then this merges any pair-duplicates its remap created).
+  db.__dedupe = { droppedConversations: [...merged], touchedMessages: [...touchedMessages], newPairKeys: [...newPairKeys], droppedUsers: db.__dedupe?.droppedUsers || [] };
+}
+
+// Merge duplicate user accounts that share one email. Historical signup
+// races (two instances each passed the snapshot email check and both created
+// an account) produced exactly the "same person listed twice" symptom.
+// Keeps the OLDEST account per email, folds in profile fields the kept copy
+// is missing, reparents every reference (sessions, listings, saved,
+// conversations via member ids + recomputed pair keys, messages, bookings,
+// inspections, reports, verifications + events, notifications, connections)
+// onto it, drops the duplicate documents, and records their ids on
+// db.__dedupe.droppedUsers so the Mongo load path deletes them.
+function dedupeUsersByEmail(db) {
+  const byEmail = new Map();
+  const remap = new Map(); // duplicateId -> keptId
+  const merged = new Set();
+  for (const user of db.users || []) {
+    const email = String(user.email || "").trim().toLowerCase();
+    if (!email) continue;
+    const existing = byEmail.get(email);
+    if (!existing) { byEmail.set(email, user); continue; }
+    const keep = String(existing.createdAt || "") <= String(user.createdAt || "") ? existing : user;
+    const drop = keep === existing ? user : existing;
+    byEmail.set(email, keep);
+    remap.set(drop.id, keep.id);
+    merged.add(drop.id);
+    // Duplicates often carry separately-set profile data; adopt anything the
+    // kept copy is missing, never overwrite a set value.
+    const blank = value => value === undefined || value === null || value === "" || value === false || (Array.isArray(value) && !value.length);
+    for (const key of ["verified","hosting","oauthProvider","oauthId","googlePicture","avatar","bio","phone","budget","habits","university"]) {
+      if (blank(keep[key]) && !blank(drop[key])) keep[key] = drop[key];
+    }
+  }
+  if (!merged.size) return;
+  const remapped = userId => remap.get(userId) || userId;
+  db.users = db.users.filter(user => !merged.has(user.id));
+  (db.sessions || []).forEach(session => { session.userId = remapped(session.userId); });
+  (db.listings || []).forEach(listing => { listing.ownerId = remapped(listing.ownerId); });
+  (db.saved || []).forEach(item => { item.userId = remapped(item.userId); });
+  (db.conversations || []).forEach(conversation => {
+    if (!Array.isArray(conversation.memberIds)) return;
+    if (conversation.memberIds.some(memberId => remap.has(memberId))) {
+      conversation.memberIds = conversation.memberIds.map(memberId => remapped(memberId));
+      if (conversation.memberIds.length === 2) conversation.pairKey = conversationPairKey(conversation.memberIds[0], conversation.memberIds[1]);
+    }
+  });
+  (db.messages || []).forEach(message => { message.senderId = remapped(message.senderId); });
+  (db.bookings || []).forEach(booking => { booking.tenantId = remapped(booking.tenantId); booking.ownerId = remapped(booking.ownerId); });
+  (db.inspections || []).forEach(inspection => { inspection.tenantId = remapped(inspection.tenantId); inspection.ownerId = remapped(inspection.ownerId); });
+  (db.reports || []).forEach(report => { report.reportedBy = remapped(report.reportedBy); });
+  (db.verifications || []).forEach(verification => { verification.userId = remapped(verification.userId); });
+  (db.verification_events || []).forEach(event => { event.userId = remapped(event.userId); });
+  (db.notifications || []).forEach(notification => { notification.userId = remapped(notification.userId); notification.actorId = remapped(notification.actorId); });
+  (db.connections || []).forEach(link => { link.requesterId = remapped(link.requesterId); link.recipientId = remapped(link.recipientId); });
+  (db.passwordResets || []).forEach(reset => { reset.userId = remapped(reset.userId); });
+  db.__dedupe ||= { droppedConversations: [], touchedMessages: [], newPairKeys: [] };
+  db.__dedupe.droppedUsers = (db.__dedupe.droppedUsers || []).concat([...merged]);
 }
 
 function readDbShape(db) {
@@ -852,6 +944,7 @@ function readDbShape(db) {
   db.connections ||= [];
   db.passwordResets ||= [];
   db.conversations.forEach(conversation => { conversation.reads ||= {}; });
+  dedupeUsersByEmail(db);
   dedupeDirectConversations(db);
   db.bookings.forEach(booking => {
     if (!Array.isArray(booking.paymentShares) || booking.paymentShares.length !== booking.splitCount) {
@@ -1184,6 +1277,47 @@ function currentUser(req, db) {
 // users back to the sign-in screen. On a snapshot miss, ask Mongo directly;
 // a hit splices the records into the live snapshot so later requests hit the
 // fast path. Fails closed only when Mongo confirms the token is gone.
+// Stale-snapshot user revives. A user created on another instance (or seconds
+// ago on this one) may be missing from the local snapshot; without these the
+// next login 401s and user-targeted actions 404 for perfectly real accounts —
+// the same bug class the session revive below fixed. Mongo is the truth; a
+// hit is spliced into the snapshot so later requests take the fast path.
+async function reviveUserByEmail(db, email) {
+  if (!USE_MONGODB) return null;
+  try {
+    const database = await Promise.race([
+      mongoDb(),
+      new Promise((unused, reject) => setTimeout(() => reject(new Error("user revive timeout")), 3_000))
+    ]);
+    const doc = await database.collection("users").findOne({ email: String(email || "").trim().toLowerCase() });
+    if (!doc) return null;
+    delete doc._id;
+    if (!db.users.some(item => item.id === doc.id)) {
+      db.users.push(doc);
+      if (loadedKeys) loadedKeys.users?.add(doc.id);
+    }
+    return doc;
+  } catch { return null; }
+}
+
+async function reviveUserById(db, userId) {
+  if (!USE_MONGODB) return null;
+  try {
+    const database = await Promise.race([
+      mongoDb(),
+      new Promise((unused, reject) => setTimeout(() => reject(new Error("user revive timeout")), 3_000))
+    ]);
+    const doc = await database.collection("users").findOne({ id: userId });
+    if (!doc) return null;
+    delete doc._id;
+    if (!db.users.some(item => item.id === doc.id)) {
+      db.users.push(doc);
+      if (loadedKeys) loadedKeys.users?.add(doc.id);
+    }
+    return doc;
+  } catch { return null; }
+}
+
 async function authenticate(req, db) {
   const token = parseCookies(req).ch_session;
   if (!token) return null;
@@ -1635,6 +1769,26 @@ async function api(req, res, url) {
     const token = id("ses");
     db.sessions.push({token,userId:newUser.id,expiresAt:Date.now()+SESSION_TTL});
     notify(db, newUser.id, { type:"system", title:"Welcome to Offkay", body:"Add your university, budget, and lifestyle so roommates can find you.", actorId:null, meta:{} });
+    // Cluster-wide atomicity: the unique users.email index rejects a signup
+    // for the same email racing in on ANOTHER instance (the snapshot check
+    // above cannot see cross-instance writes). The race loser answers 409
+    // exactly like the in-memory check and never persists its half-account.
+    if (USE_MONGODB) {
+      let database = null;
+      try {
+        database = await mongoDb();
+        await database.collection("users").insertOne({ ...newUser, _id: newUser.id });
+      } catch (err) {
+        if (database && (err?.code === 11000 || String(err?.message || "").includes("E11000"))) {
+          db.users = db.users.filter(item => item.id !== newUser.id);
+          db.sessions = db.sessions.filter(item => item.token !== token);
+          db.notifications = db.notifications.filter(item => item.userId !== newUser.id);
+          return error(res, 409, "An account with this email already exists. Try signing in instead.");
+        }
+        // Any other failure: fall through to diff persistence, which upserts
+        // the same document (file-mode parity).
+      }
+    }
     await new Promise(resolve => setTimeout(resolve, 0));
     await persistDb(db);
     return json(res, 201, {user:publicUser(newUser)}, {"Set-Cookie":sessionCookie(req, token, 2592000)});
@@ -1643,7 +1797,9 @@ async function api(req, res, url) {
   if (route === "/api/auth/login" && method === "POST") {
     if (!rateLimit(`ip:${ip}:login`, 30, 15 * 60_000)) return error(res, 429, "Too many sign-in attempts. Wait a few minutes.");
     const body = await parseBody(req);
-    const account = db.users.find(item => item.email === String(body.email || "").trim().toLowerCase());
+    const loginEmail = String(body.email || "").trim().toLowerCase();
+    let account = db.users.find(item => item.email === loginEmail)
+      || await reviveUserByEmail(db, loginEmail);
     if (!account || !verifyPassword(String(body.password || ""), account.password)) return error(res, 401, "Email or password is incorrect");
     const token = id("ses");
     db.sessions.push({token,userId:account.id,expiresAt:Date.now()+SESSION_TTL});
@@ -1769,7 +1925,35 @@ async function api(req, res, url) {
         googlePicture: /^https:\/\//.test(String(idInfo.picture || "")) ? String(idInfo.picture).slice(0, 500) : null
       };
       db.users.push(account);
-      notify(db, account.id, { type: "system", title: "Welcome to Offkay", body: "Add your university, budget, and lifestyle so roommates can find you.", actorId: null, meta: {} });
+      let created = true;
+      if (USE_MONGODB) {
+        let database = null;
+        try {
+          database = await mongoDb();
+          await database.collection("users").insertOne({ ...account, _id: account.id });
+        } catch (err) {
+          if (database && (err?.code === 11000 || String(err?.message || "").includes("E11000"))) {
+            // Another instance created this email first: sign in as THAT
+            // account instead of spawning a duplicate.
+            db.users = db.users.filter(item => item.id !== account.id);
+            let winner = null;
+            try {
+              const doc = await database.collection("users").findOne({ email: googleEmail });
+              if (doc) { delete doc._id; winner = doc; }
+            } catch {}
+            if (!winner) return fail("Your Google account matches an existing Offkay account. Please try again in a moment.");
+            if (!db.users.some(item => item.id === winner.id)) {
+              db.users.push(winner);
+              if (loadedKeys) loadedKeys.users?.add(winner.id);
+            }
+            account = winner;
+            created = false;
+          }
+        }
+      }
+      if (created) {
+        notify(db, account.id, { type: "system", title: "Welcome to Offkay", body: "Add your university, budget, and lifestyle so roommates can find you.", actorId: null, meta: {} });
+      }
     } else if (!account.oauthProvider) {
       // First Google sign-in on an email-password account: link the identity.
       // The password stays intact, so email sign-in keeps working.
@@ -2189,12 +2373,42 @@ async function api(req, res, url) {
   if (route === "/api/conversations/start" && method === "POST") {
     const account = requireUser(req,res,db); if (!account) return;
     const body = await parseBody(req);
-    const candidate = db.users.find(item => item.id === body.userId);
+    const candidate = db.users.find(item => item.id === body.userId)
+      || await reviveUserById(db, body.userId);
     if (!candidate || candidate.id === account.id) return error(res,404,"User not found");
     let conversation = findDirectConversation(db, account.id, candidate.id);
     if (!conversation) {
-      conversation = {id:id("con"),memberIds:[account.id,candidate.id],listingId:null,pairKey:conversationPairKey(account.id,candidate.id),updatedAt:new Date().toISOString(),reads:{},openerFor:null};
-      db.conversations.push(conversation);
+      const fresh = {id:id("con"),memberIds:[account.id,candidate.id],listingId:null,pairKey:conversationPairKey(account.id,candidate.id),updatedAt:new Date().toISOString(),reads:{},openerFor:null};
+      let done = false;
+      if (USE_MONGODB) {
+        let database = null;
+        try {
+          database = await mongoDb();
+          await database.collection("conversations").insertOne({ ...fresh, _id: fresh.id });
+          db.conversations.push(fresh);
+          conversation = fresh;
+          done = true;
+        } catch (err) {
+          if (database && (err?.code === 11000 || String(err?.message || "").includes("E11000"))) {
+            // Another instance opened this same pair a moment ago: reuse the
+            // winning conversation instead of creating a duplicate.
+            const doc = await database.collection("conversations").findOne({ pairKey: fresh.pairKey }).catch(() => null);
+            if (doc) {
+              delete doc._id;
+              if (!db.conversations.some(item => item.id === doc.id)) {
+                db.conversations.push(doc);
+                if (loadedKeys) loadedKeys.conversations?.add(doc.id);
+              }
+              conversation = doc;
+              done = true;
+            }
+          }
+        }
+      }
+      if (!done) {
+        db.conversations.push(fresh);
+        conversation = fresh;
+      }
     } else if (!conversation.pairKey) {
       conversation.pairKey = conversationPairKey(account.id, candidate.id);
     }

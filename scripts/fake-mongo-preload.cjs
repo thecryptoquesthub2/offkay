@@ -3,6 +3,7 @@
    OFFKAY_FAKE_MONGO=1; the require("mongodb") call then resolves to this
    module. Implements exactly the surface server.js uses: collection.find()
    .toArray(), findOne (with projection), bulkWrite replaceOne-upserts,
+   insertOne + createIndex (unique-index E11000 enforcement for race tests),
    deleteMany({ _id: { $in } }), admin().command({ ping }). Persisted to a
    JSON file so a separate process can assert on the stored documents. */
 const fs = require("node:fs");
@@ -57,6 +58,35 @@ function cursor(docs) {
 }
 function makeCollection(name) {
   return {
+    async createIndex(spec, options = {}) {
+      reloadIfShared();
+      // Register the spec so insertOne can enforce uniqueness (the fake's
+      // stand-in for Atlas index enforcement in race regression tests).
+      store.indexes ||= {};
+      store.indexes[name] ||= [];
+      const indexName = options.name || `idx_${Object.keys(spec).join("_")}`;
+      if (!store.indexes[name].some(entry => entry.name === indexName)) {
+        store.indexes[name].push({ name: indexName, unique: Boolean(options.unique), keys: Object.keys(spec) });
+      }
+      save();
+      return indexName;
+    },
+    async insertOne(doc) {
+      await delay();
+      reloadIfShared();
+      for (const entry of (store.indexes && store.indexes[name]) || []) {
+        if (!entry.unique) continue;
+        const conflict = coll(name).find(existing => entry.keys.every(key => existing[key] === doc[key]));
+        if (conflict) {
+          const err = new Error(`E11000 duplicate key error collection offkay.${name} dup key`);
+          err.code = 11000;
+          throw err;
+        }
+      }
+      coll(name).push({ ...doc });
+      save();
+      return { acknowledged: true, insertedId: doc._id };
+    },
     find(filter, options) {
       reloadIfShared();
       let docs = coll(name).filter(d => matches(d, filter));
@@ -116,8 +146,7 @@ function makeCollection(name) {
       if (idx >= 0) { list.splice(idx, 1); save(); return { deletedCount: 1 }; }
       return { deletedCount: 0 };
     },
-    async countDocuments(filter) { reloadIfShared(); return coll(name).filter(d => matches(d, filter)).length; },
-    async insertOne(doc) { reloadIfShared(); coll(name).push({ ...doc }); save(); return {}; }
+    async countDocuments(filter) { reloadIfShared(); return coll(name).filter(d => matches(d, filter)).length; }
   };
 }
 function makeDb() {
